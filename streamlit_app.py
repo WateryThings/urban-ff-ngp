@@ -9,7 +9,7 @@ import os
 import json
 import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURATION ---
 PRODUCTS = {
@@ -37,23 +37,28 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("""
     #### Monitored Products & Thresholds:
-    * **MRMS 1-hr QPE:** $\ge$ 1.0"
-    * **MRMS Instantaneous Rain Rates:** $\ge$ 2.0"/1-hr *(sustained over at least 3 scans)*
-    * **FLASH CREST Max Unit Streamflow:** $\ge$ 200 cfs/sq. mi.
-    * **FLASH Hydrophobic Max Unit Streamflow:** $\ge$ 1000 cfs/sq. mi.
+    * MRMS 1-hr QPE: $\ge$ 1.0"
+    * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
+    * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
+    * FLASH Hydrophobic Max Unit Streamflow: $\ge$ 1000 cfs/sq. mi.
     """)
 
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * **Translucent Gray Polygons:** Spatial extent of urban and small towns.
-    * **Solid Red Polygons:** One or more of the MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
-    * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
+    * Translucent Gray Polygons: Spatial extent of urban and small towns.
+    * Solid Red Polygons: One or more of the MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
-# --- TIMESTAMP READOUT ---
-local_time_str = datetime.now().strftime("%I:%M %p CDT").lower()
-utc_time_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+# --- TIMESTAMP READOUT (FIXED FOR CDT) ---
+# Fetch absolute UTC time from the cloud server
+utc_now = datetime.now(timezone.utc)
+# Force Central Daylight Time (CDT) by applying a fixed -5 hour offset from UTC
+cdt_now = utc_now - timedelta(hours=5)
+
+local_time_str = cdt_now.strftime("%I:%M %p cdt").lower()
+utc_time_str = utc_now.strftime("%H:%M UTC")
 
 st.info(f"⏳ **Last Scanner Update:** {local_time_str} ({utc_time_str}) | *Auto-Scan ID Cycle: {count}*")
 st.markdown("---")
@@ -143,12 +148,10 @@ def scan_data():
                 for _, row in urban_gdf.iterrows():
                     min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                     
-                    # Pull values across all three time-steps
                     v1 = datasets[0].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[0]].max().values
                     v2 = datasets[1].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[1]].max().values
                     v3 = datasets[2].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[2]].max().values
                     
-                    # Evaluate if the rate is sustained over all three historical parameters
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             key = f"{row['name']}, {row['state']}"
