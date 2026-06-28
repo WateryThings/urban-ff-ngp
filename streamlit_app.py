@@ -11,7 +11,7 @@ import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION & METRIC THRESHOLDS ---
 PRODUCTS = {
     "RadarOnly_QPE_01H_00.00": 25.4,               # 1.0 inch -> 25.4 mm
     "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": 2.19,   # 200 cfs/sq mi -> 2.19 m³/s/km²
@@ -25,12 +25,11 @@ st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
 # --- AUTOMATED OPERATIONS TIMER ---
-# Automatically refreshes the entire web application every 120,000 milliseconds (2 minutes)
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding based on any of the below products & criteria being met within a 5-mile buffer.
+**BLUF:** This real-time tool will flash red for any city or small town when 3 out of the 4 product thresholds are met within a 5-mile buffer of the urban bounds.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -38,18 +37,18 @@ col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     st.markdown("""
     #### Monitored Products & Thresholds:
-    * MRMS 1-hr QPE: $\ge$ 1.0"
-    * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
-    * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
-    * FLASH Hydrophobic Max Unit Streamflow: $\ge$ 1000 cfs/sq. mi.
+    1. **MRMS 1-hr QPE:** $\ge$ 1.0"
+    2. **MRMS Instantaneous Rain Rates:** $\ge$ 2.0"/1-hr *(sustained over 3 scans)*
+    3. **FLASH CREST Max Unit Streamflow:** $\ge$ 200 cfs/sq. mi.
+    4. **FLASH Hydrophobic Max Unit Streamflow:** $\ge$ 1000 cfs/sq. mi.
     """)
 
 with col2:
     st.markdown("""
-    #### Map Symbology:
-    * Translucent Gray Polygons: Spatial extent of urban and small towns.
-    * Solid Red Polygons: One or more of the MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
-    * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
+    #### Map Symbology & Consensus Logic:
+    * Translucent Gray Polygons: Spatial baseline footprint. Monitored parameters are quiet ($<3$ active thresholds).
+    * Solid Red Polygons: **Heads-Up Consensus Alert.** Severe multi-product matching ($3$ or $4$ thresholds active). Interrogate immediately.
+    * Automated Refresh: Engine cycles every 2 minutes.
     """)
 
 with col3:
@@ -88,7 +87,7 @@ for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]   
     feature["properties"]["line_color"] = [120, 120, 120, 100]  
 
-# --- DATA EXTRACTION WITH MEMORY FOR SCANNING ---
+# --- DATA EXTRACTION & DOWNLOADING ---
 def get_latest_files(fs, product_name, num_files=1):
     path = f"noaa-mrms-pds/CONUS/{product_name}/"
     try:
@@ -96,8 +95,7 @@ def get_latest_files(fs, product_name, num_files=1):
         grib_files = [f for f in files if f.endswith('.grib2.gz')]
         if not grib_files: return []
         return grib_files[-num_files:]
-    except Exception as e:
-        st.warning(f"Failed to list bucket for {product_name}: {e}")
+    except Exception:
         return []
 
 def extract_file(fs, s3_path, idx_suffix=""):
@@ -110,15 +108,19 @@ def extract_file(fs, s3_path, idx_suffix=""):
                 shutil.copyfileobj(f_in, f_out)
         os.remove(local_gz)
         return local_grib
-    except Exception as e:
+    except Exception:
         if os.path.exists(local_gz): os.remove(local_gz)
         return None
 
+# --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 def scan_data():
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
     
-    # Part 1: Standard Products Check
+    # Initialize an isolated tracking sheet for every individual community
+    town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
+    
+    # 1. Evaluate the 3 core raster matrices (QPE, CREST, Hydrophobic)
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
         if not latest_files: continue
@@ -128,18 +130,19 @@ def scan_data():
             ds = xr.open_dataset(local_grib, engine="cfgrib")
             var_name = list(ds.data_vars)[0]
             for _, row in urban_gdf.iterrows():
+                key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 val = ds.sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_name].max().values
+                
                 if pd.notna(val) and val >= threshold:
-                    key = f"{row['name']}, {row['state']}"
-                    if key not in results: results[key] = []
-                    results[key].append(f"{product}: {val:.2f} (Threshold: {threshold})")
+                    town_tallies[key]["score"] += 1
+                    town_tallies[key]["details"].append(f"{product}: {val:.2f} (Threshold: {threshold})")
             ds.close()
             os.remove(local_grib)
         except Exception:
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    # Part 2: Rain Rate Check (3 Scans Continuity)
+    # 2. Evaluate the 3-Scan Sustained Instantaneous Rain Rate rule
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
@@ -148,6 +151,7 @@ def scan_data():
             if len(datasets) == 3:
                 var_names = [list(d.data_vars)[0] for d in datasets]
                 for _, row in urban_gdf.iterrows():
+                    key = f"{row['name']}, {row['state']}"
                     min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                     
                     v1 = datasets[0].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[0]].max().values
@@ -156,24 +160,29 @@ def scan_data():
                     
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                            key = f"{row['name']}, {row['state']}"
-                            if key not in results: results[key] = []
-                            results[key].append(f"Sustained Rain Rate (3 Scans): Min Peak {min(v1,v2,v3):.2f} (Threshold: {RAIN_RATE_THRESH})")
+                            town_tallies[key]["score"] += 1
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate (3 Scans Exceeded): Min Peak {min(v1,v2,v3):.2f}")
             for d in datasets: d.close()
         except Exception:
             pass
         for g in local_gribs:
             if g and os.path.exists(g): os.remove(g)
             
+    # 3. Consensus Filter: Only push alerts if at least 3 distinct thresholds are broken
+    for town_key, data in town_tallies.items():
+        if data["score"] >= 3:
+            results[town_key] = {
+                "Consensus Score": f"{data['score']} of 4 Metrics Broken",
+                "Trigger Details": data["details"]
+            }
+            
     return results
 
-# --- RENDERING THE ADVANCED MAP INTERFACE ---
+# --- RENDERING THE MAP LAYERS ---
 st.subheader("Regional CWA Flash Flood Alert Map")
 
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
-    
-    # Base Layer: NOAA nowCOAST Real-time MRMS Base Reflectivity (Secured HTTPS Endpoint Layer 1)
     if show_radar:
         radar_layer = pdk.Layer(
             "BitmapLayer",
@@ -183,14 +192,12 @@ def render_map(cwa_layer, city_shapes, show_radar):
         )
         layers.append(radar_layer)
 
-    # Layer 1: The outer operational CWA outline (Crisp Blue Perimeter)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
     layers.append(outline_layer)
     
-    # Layer 2: The pure AWIPS-style urban footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -227,7 +234,7 @@ with st.spinner("Analyzing current regional CWA footprints..."):
         map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
         st.json(alert_results)
     else:
-        st.success("✅ All systems normal across all 5 operational WFO domains.")
+        st.success("✅ All systems normal. No multi-product severe hazards detected across operational domains.")
         map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
 
 if st.button("Refresh & Scan"):
