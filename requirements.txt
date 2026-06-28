@@ -1,12 +1,8 @@
 streamlit
-osmnx
-geopandas
-xarray
 numpy
 pandas
-boto3
-botocore
 s3fs
-netCDF4
-scipy
+xarray
 cfgrib
+pydeck
+streamlit-autorefresh
