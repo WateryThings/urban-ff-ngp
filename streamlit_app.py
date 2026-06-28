@@ -9,6 +9,7 @@ import os
 import json
 import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
 
 # --- CONFIGURATION ---
 PRODUCTS = {
@@ -24,7 +25,6 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 # --- AUTOMATED OPERATIONS TIMER ---
 # Automatically refreshes the entire web application every 120,000 milliseconds (2 minutes)
-# This keeps data completely synced with rolling MRMS bucket arrivals without user interaction
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
@@ -38,10 +38,10 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("""
     #### Monitored Products & Thresholds for Urban Areas:
-    * **1-hr MRMS QPE:** Greater or equal than 1.0"
-    * **MRMS Instantaneous Rain Rates:** Greater than or equal to 2.0"/1hr
-    * **FLASH CREST Max Unit Streamflow:** Greater than or equal to 200 cfs/sq. mi.
-    * **FLASH Hydrophobic Max Unit Streamflow:** Greater than or equal to 1000 cfs/sq. mi.
+    * **MRMS 1-hr QPE:** $\ge$ 1.0"
+    * **MRMS Instantaneous Rain Rates:** $\ge$ 2.0"/1hr
+    * **FLASH CREST Max Unit Streamflow:** $\ge$ 200 cfs/sq. mi.
+    * **FLASH Hydrophobic Max Unit Streamflow:** $\ge$ 1000 cfs/sq. mi.
     """)
 
 with col2:
@@ -53,7 +53,9 @@ with col2:
     * **Solid Red Polygons:** One or more MRMS products meet or exceed the listed thresholds within the buffered area. Detailed readings will output via JSON text below the map.
     """)
 
-st.markdown(f"*System Status: Running automated tracking cycle. (Auto-Scan ID: {count})*")
+# --- TIMESTAMP READOUT ---
+current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S Local")
+st.info(f"⏳ **Last Scanner Update:** {current_time_str} | *Auto-Scan ID Cycle: {count}*")
 st.markdown("---")
 
 @st.cache_data
@@ -173,7 +175,6 @@ map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data()
     
-    # Reset colors back to clean baseline gray first
     for feature in urban_shapes_geojson["features"]:
         feature["properties"]["fill_color"] = [180, 180, 180, 50]
         feature["properties"]["line_color"] = [120, 120, 120, 100]
