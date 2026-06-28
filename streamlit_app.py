@@ -22,7 +22,7 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 @st.cache_data
 def get_urban_centers():
-    # Load our customized dataset matched precisely to the 5 targeted CWA footprints
+    # Load our massive new dataset matching your 5 WFO CWA boundaries perfectly
     return pd.read_csv("urban_centers.csv")
 
 urban_gdf = get_urban_centers()
@@ -101,13 +101,13 @@ def scan_data():
     return results
 
 # --- UI ---
-st.subheader("Urban Flash Flood Alert Map")
+st.subheader("Regional CWA Flash Flood Alert Map")
 
-# Set clean default styles for the map configuration
-urban_gdf['color'] = '#A9A9A9'  # Cool Gray background dots
+# 1. Set clean default styles for the map configuration
+urban_gdf['color'] = '#A9A9A9'  # Cool Gray background dots for safe towns
 urban_gdf['size'] = 20          # Small baseline indicator footprint
 
-# Create an in-place placeholder for smooth interface transitions
+# 2. Create an in-place placeholder for smooth interface transitions
 map_placeholder = st.empty()
 map_placeholder.map(urban_gdf, color='color', size='size')
 
@@ -119,11 +119,15 @@ if st.button("Refresh & Scan"):
             st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
             
             # Match alert results cleanly back to our custom dataframe
-            alerted_towns = [key.split(",")[0] for key in alert_results.keys()]
+            # We look at the unique string key "Town, State" to safely handle duplicate town names
+            alerted_towns = [key.split(",")[0].strip() for key in alert_results.keys()]
+            alerted_states = [key.split(",")[1].strip() for key in alert_results.keys()]
             
             # Adjust the dynamic mapping visual states for alerted domains
-            urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'color'] = '#FF0000'
-            urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'size'] = 1000
+            # This turns only the threatened towns bright red and makes them huge
+            for name, state in zip(alerted_towns, alerted_states):
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'color'] = '#FF0000'
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'size'] = 1000
             
             # Redraw map seamlessly
             map_placeholder.map(urban_gdf, color='color', size='size')
