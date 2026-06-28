@@ -9,7 +9,7 @@ import os
 import json
 import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime
+from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
 PRODUCTS = {
@@ -38,7 +38,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("""
     #### Monitored Products & Thresholds for Urban Areas:
-    * **MRMS 1-hr QPE:** $\ge$ 1.0"
+    * **1-hr MRMS QPE:** $\ge$ 1.0"
     * **MRMS Instantaneous Rain Rates:** $\ge$ 2.0"/1hr
     * **FLASH CREST Max Unit Streamflow:** $\ge$ 200 cfs/sq. mi.
     * **FLASH Hydrophobic Max Unit Streamflow:** $\ge$ 1000 cfs/sq. mi.
@@ -54,8 +54,11 @@ with col2:
     """)
 
 # --- TIMESTAMP READOUT ---
-current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S Local")
-st.info(f"⏳ **Last Scanner Update:** {current_time_str} | *Auto-Scan ID Cycle: {count}*")
+# Captures both local machine time and absolute UTC standard time simultaneously
+local_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S Local")
+utc_time_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+
+st.info(f"⏳ **Last Scanner Update:** {local_time_str} ({utc_time_str}) | *Auto-Scan ID Cycle: {count}*")
 st.markdown("---")
 
 @st.cache_data
