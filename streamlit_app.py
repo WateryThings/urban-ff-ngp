@@ -123,7 +123,6 @@ def scan_data():
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
-    # 1. Evaluate core raster matrices
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
         if not latest_files: continue
@@ -145,7 +144,6 @@ def scan_data():
         except Exception:
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    # 2. Evaluate 3-Scan Sustained Rain Rate rule
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
@@ -171,7 +169,6 @@ def scan_data():
         for g in local_gribs:
             if g and os.path.exists(g): os.remove(g)
             
-    # 3. Consensus Filter: 3 out of 4 criteria must be met
     for town_key, data in town_tallies.items():
         if data["score"] >= 3:
             results[town_key] = {
@@ -185,31 +182,28 @@ def scan_data():
 st.subheader("Regional CWA Flash Flood Alert Map")
 
 def render_map(cwa_layer, city_shapes, show_radar):
-    layers = []
-    if show_radar:
-        radar_layer = pdk.Layer(
-            "BitmapLayer",
-            image="https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/radar_meteo_imagery_nexrad_time/MapServer/export?bbox=-110,40,-90,52&bboxSR=4326&imageSR=3857&layers=show:1&size=1200,800&format=png32&transparent=true&f=image",
-            bounds=[-110.0, 40.0, -90.0, 52.0],
-            opacity=0.60
-        )
-        layers.append(radar_layer)
+    # Base Layer: High-Availability Secure NWS NCEP Base Reflectivity ArcGIS REST Engine
+    radar_layer = pdk.Layer(
+        "BitmapLayer",
+        image="https://mapservices.weather.noaa.gov/eventdriven/rest/services/radar/radar_base_reflectivity/MapServer/export?bbox=-110,40,-90,52&bboxSR=4326&imageSR=3857&layers=show:2&size=1200,800&format=png32&transparent=true&f=image",
+        bounds=[-110.0, 40.0, -90.0, 52.0],
+        opacity=0.60,
+        visible=show_radar # Tracks the user's box in real time without redrawing structures
+    )
 
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
-    layers.append(outline_layer)
     
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
     )
-    layers.append(urban_polygon_layer)
     
     return pdk.Deck(
-        layers=layers,
+        layers=[radar_layer, outline_layer, urban_polygon_layer],
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
         map_style="light", tooltip={"text": "{name}"}
     )
