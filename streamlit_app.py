@@ -22,8 +22,19 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 @st.cache_data
 def get_urban_centers():
-    # Load our massive new dataset matching your 5 WFO CWA boundaries perfectly
-    return pd.read_csv("urban_centers.csv")
+    # Load our dataset and explicitly format it to prevent Streamlit mapping errors
+    df = pd.read_csv("urban_centers.csv")
+    
+    # Force column names to be spelled out exactly how Streamlit wants them
+    df = df.rename(columns={'lat': 'latitude', 'lon': 'longitude'})
+    
+    # Crucial Fix: Force coordinates to be clean numbers (floats) to prevent API drops
+    df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+    df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+    
+    # Drop any accidental rows that didn't have valid coordinates
+    df = df.dropna(subset=['latitude', 'longitude'])
+    return df
 
 urban_gdf = get_urban_centers()
 
@@ -73,8 +84,8 @@ def scan_data():
             for _, row in urban_gdf.iterrows():
                 # Define our 5-mile search box around the town
                 buffer = 0.07 
-                lat = row['lat']
-                lon = row['lon'] % 360  # Handling the 0-360 MRMS coordinate framework
+                lat = row['latitude']
+                lon = row['longitude'] % 360  # Handling the 0-360 MRMS coordinate framework
                 
                 # Slice the MRMS grid to our 5-mile box and find the MAX value inside it
                 try:
@@ -109,7 +120,12 @@ urban_gdf['size'] = 20          # Small baseline indicator footprint
 
 # 2. Create an in-place placeholder for smooth interface transitions
 map_placeholder = st.empty()
-map_placeholder.map(urban_gdf, color='color', size='size')
+
+# Guard rail: Check if our dataframe contains data before initializing map
+if not urban_gdf.empty:
+    map_placeholder.map(urban_gdf, color='color', size='size')
+else:
+    st.error("The urban_centers.csv data is empty. Please verify your data generation step.")
 
 if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
@@ -119,12 +135,10 @@ if st.button("Refresh & Scan"):
             st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
             
             # Match alert results cleanly back to our custom dataframe
-            # We look at the unique string key "Town, State" to safely handle duplicate town names
             alerted_towns = [key.split(",")[0].strip() for key in alert_results.keys()]
             alerted_states = [key.split(",")[1].strip() for key in alert_results.keys()]
             
             # Adjust the dynamic mapping visual states for alerted domains
-            # This turns only the threatened towns bright red and makes them huge
             for name, state in zip(alerted_towns, alerted_states):
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'color'] = '#FF0000'
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'size'] = 1000
