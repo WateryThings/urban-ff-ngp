@@ -53,8 +53,7 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    # Instantaneous layout toggle switch for the radar overlay
-    toggle_radar = st.checkbox("Overlay MRMS Reflectivity", value=False, help="Streams live NOAA lowest-altitude reflectivity tiles over the canvas.")
+    toggle_radar = st.checkbox("Overlay MRMS Reflectivity", value=False, help="Toggles live NOAA lowest-altitude reflectivity over the map area.")
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
@@ -84,7 +83,6 @@ urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
-# Initialize default quiet styling for all urban polygon shapes
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]   
     feature["properties"]["line_color"] = [120, 120, 120, 100]  
@@ -174,14 +172,13 @@ st.subheader("Regional CWA Flash Flood Alert Map")
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
-    # Layer 0 (Optional Base Layer): NOAA nowCOAST Real-time MRMS Reflectivity WMS Tile Stream
+    # Speed Fix: Using a direct WMS exported single-image bitmap footprint to avoid tile loading blocks
     if show_radar:
         radar_layer = pdk.Layer(
-            "TileLayer",
-            data="https://nowcoast.noaa.gov/arcgis/services/nowcoast/radar_meteo_imagery_nexrad_time/MapServer/WmsServer?request=GetMap&service=WMS&styles=&imageSR=3857&bboxSR=3857&format=image/png32&transparent=true&version=1.3.0&width=256&height=256&crs=CRS:84&bbox={bbox}",
-            get_tile_data=None,
-            opacity=0.45,  # Soft transparency so town polygons remain visible underneath
-            tile_size=256
+            "BitmapLayer",
+            image="https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/radar_meteo_imagery_nexrad_time/MapServer/export?bbox=-110,40,-90,52&bboxSR=4326&layers=show:3&size=1200,800&format=png32&transparent=true&f=image",
+            bounds=[-110.0, 40.0, -90.0, 52.0],
+            opacity=0.55
         )
         layers.append(radar_layer)
 
