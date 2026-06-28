@@ -24,7 +24,7 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
 # --- PROTOTYPE WARNING BANNER ---
-st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress, similar to C3P0 in The Phantom Menace and will likely break at some point.")
+st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will likely break at some point, maybe even even now!.")
 
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
