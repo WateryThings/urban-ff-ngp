@@ -4,3 +4,7 @@ boto3
 xarray
 cfgrib
 numpy
+geopandas
+osmnx
+shapely
+pyproj
