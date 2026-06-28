@@ -22,7 +22,7 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 @st.cache_data
 def get_urban_centers():
-    # Make sure your CSV has 'lat', 'lon', and 'name' columns!
+    # Load our massive new Census dataset (make sure the columns are name, state, lat, lon!)
     return pd.read_csv("urban_centers.csv")
 
 urban_gdf = get_urban_centers()
@@ -78,13 +78,27 @@ def scan_data():
             var_name = list(ds.data_vars)[0]
             
             for _, row in urban_gdf.iterrows():
-                # Note: If this fails, check if MRMS lons are 0-360 instead of -180 to 180!
-                val = ds.sel(latitude=row['lat'], longitude=row['lon'], method='nearest')[var_name].values
+                # Define our 5-mile search box around the town
+                buffer = 0.07 
+                lat = row['lat']
+                lon = row['lon'] % 360  # Catching that 0-360 longitude trap!
                 
-                if val >= threshold:
-                    if row['name'] not in results:
-                        results[row['name']] = []
-                    results[row['name']].append(f"{product}: {val:.2f} (Threshold: {threshold})")
+                # Slice the MRMS grid to our 5-mile box and find the MAX value inside it
+                # Note: MRMS latitudes are stored North to South, so we slice max to min
+                try:
+                    val = ds.sel(
+                        latitude=slice(lat + buffer, lat - buffer),
+                        longitude=slice(lon - buffer, lon + buffer)
+                    )[var_name].max().values
+                    
+                    # Ensure the value isn't empty data (NaN), and check against threshold
+                    if pd.notna(val) and val >= threshold:
+                        if row['name'] not in results:
+                            results[row['name']] = []
+                        results[row['name']].append(f"{product}: {val:.2f} (Threshold: {threshold})")
+                except KeyError:
+                    # If the town falls completely off the MRMS grid edge, gracefully skip it
+                    continue
             
             # Clean up the unzipped file to keep the server clean
             ds.close()
@@ -102,7 +116,7 @@ st.subheader("Urban Flash Flood Alert Map")
 st.map(urban_gdf)
 
 if st.button("Refresh & Scan"):
-    with st.spinner("Downloading MRMS grids and analyzing thresholds..."):
+    with st.spinner("Downloading MRMS grids and analyzing spatial thresholds..."):
         alert_results = scan_data()
         
         if alert_results:
