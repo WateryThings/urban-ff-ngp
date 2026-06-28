@@ -24,10 +24,12 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 @st.cache_data
 def get_urban_centers():
     df = pd.read_csv("urban_centers.csv")
-    df = df.rename(columns={'lat': 'latitude', 'lon': 'longitude'})
-    df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
-    df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-    return df.dropna(subset=['latitude', 'longitude'])
+    # Force the pre-calculated edge coordinates from Spyder to be pure decimal fields
+    df['min_lon'] = pd.to_numeric(df['min_lon'], errors='coerce')
+    df['max_lon'] = pd.to_numeric(df['max_lon'], errors='coerce')
+    df['min_lat'] = pd.to_numeric(df['min_lat'], errors='coerce')
+    df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
+    return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
 @st.cache_data
 def load_json_layer(filepath):
@@ -39,7 +41,6 @@ cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
 # Initialize default quiet styling for all urban polygon shapes
-# Each polygon starts as a soft translucent gray [Red, Green, Blue, Alpha]
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]   # Translucent gray
     feature["properties"]["line_color"] = [120, 120, 120, 100]  # Soft gray borders
@@ -75,12 +76,21 @@ def scan_data():
         try:
             ds = xr.open_dataset(local_file_path, engine="cfgrib")
             var_name = list(ds.data_vars)[0]
+            
             for _, row in urban_gdf.iterrows():
-                buffer = 0.07 
-                lat = row['latitude']
-                lon = row['longitude'] % 360
+                # Extract the 5-mile edge-buffered boundaries and adjust for 0-360 longitude
+                min_lon = row['min_lon'] % 360
+                max_lon = row['max_lon'] % 360
+                min_lat = row['min_lat']
+                max_lat = row['max_lat']
+                
+                # Slice the MRMS data cube using our spatial boundary limits
                 try:
-                    val = ds.sel(latitude=slice(lat + buffer, lat - buffer), longitude=slice(lon - buffer, lon + buffer))[var_name].max().values
+                    val = ds.sel(
+                        latitude=slice(max_lat, min_lat),  # MRMS grids run North to South
+                        longitude=slice(min_lon, max_lon)
+                    )[var_name].max().values
+                    
                     if pd.notna(val) and val >= threshold:
                         unique_key = f"{row['name']}, {row['state']}"
                         if unique_key not in results: results[unique_key] = []
@@ -97,17 +107,17 @@ def scan_data():
 st.subheader("Regional CWA Flash Flood Alert Map")
 
 def render_map(cwa_layer, city_shapes):
-    # Layer 1: The outer operational CWA outline
+    # Layer 1: The outer operational CWA outline (Crisp Blue Perimeter)
     outline_layer = pdk.Layer(
         "GeoJsonLayer",
         cwa_layer,
         stroke_width=3,
-        get_line_color=[0, 150, 255, 255], # Operational blue perimeter 
+        get_line_color=[0, 150, 255, 255], 
         get_fill_color=[0, 0, 0, 0],       
         line_width_min_pixels=2,
     )
     
-    # Layer 2: The pure AWIPS urban footprints (No points/dots cluttering the screen!)
+    # Layer 2: The pure AWIPS-style urban footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer",
         city_shapes,
@@ -123,7 +133,7 @@ def render_map(cwa_layer, city_shapes):
         layers=[outline_layer, urban_polygon_layer],
         initial_view_state=view_state,
         map_style="light",  
-        tooltip={"text": "{name}"} # Hovering your cursor over the shading will display the city footprint name
+        tooltip={"text": "{name}"}
     )
 
 map_placeholder = st.empty()
@@ -133,24 +143,21 @@ if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
         alert_results = scan_data()
         
-        # Reset colors back to clean baseline translucent gray first
+        # Reset colors back to clean baseline gray first
         for feature in urban_shapes_geojson["features"]:
             feature["properties"]["fill_color"] = [180, 180, 180, 50]
             feature["properties"]["line_color"] = [120, 120, 120, 100]
             
         if alert_results:
             st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-            
-            # Extract just the raw town names that tripped the alerts
             alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
             
-            # Loop through the GeoJSON polygon elements and turn matching names solid bright warning red!
+            # Loop through the polygon features and turn matching threatened shapes bright red
             for feature in urban_shapes_geojson["features"]:
                 feat_name = str(feature["properties"]["name"]).upper()
-                # Check if any part of the Census footprint name matches our alerted town registry
                 if any(town in feat_name for town in alerted_towns):
                     feature["properties"]["fill_color"] = [255, 0, 0, 180]  # Vivid Warning Red
-                    feature["properties"]["line_color"] = [150, 0, 0, 255]  # Deep Red Boundary
+                    feature["properties"]["line_color"] = [150, 0, 0, 255]  # Deep Red Border
             
             map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
             st.json(alert_results)
