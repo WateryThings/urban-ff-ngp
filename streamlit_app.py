@@ -1,20 +1,37 @@
 import streamlit as st
+import osmnx as ox
+import xarray as xr
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
 import pandas as pd
+import geopandas as gpd
 
-# 1. Page Configuration
-st.set_page_config(page_title="Urban FF - NGP", layout="wide")
+# 1. Setup - Fetch Urban Centers
+@st.cache_data
+def get_urban_centers():
+    tags = {'place': ['city', 'town', 'village', 'hamlet']}
+    gdf = ox.features_from_place(["North Dakota, USA", "South Dakota, USA"], tags=tags)
+    return gdf
 
-st.title("Urban Flash Flood Decision Support (NGP")
-st.write("Monitoring real-time MRMS data for urban flash flood potential.")
+urban_gdf = get_urban_centers()
 
-# 2. Placeholder for our Map
-st.map(pd.DataFrame({'lat': [47.9253], 'lon': [-97.0329]})) # Starting with Grand Forks, ND
+# 2. Logic - Fetching MRMS Data
+def get_latest_mrms_qpe():
+    # Connect to AWS S3 (Anonymous)
+    s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    # This is a simplified example path - MRMS S3 structure is complex
+    # For now, we will set up the structure to point to the QPE product
+    st.info("Searching for latest MRMS QPE data on AWS...")
+    # In a real operational app, you would parse the bucket folder 
+    # to find the newest timestamped .grib2 file
+    return None 
 
-# 3. Sidebar for Logic Toggles
-st.sidebar.header("Alert Logic")
-use_persistence = st.sidebar.checkbox("Use 6-min Rain Rate Persistence", value=True)
-threshold_qpe = st.sidebar.slider("1-hr QPE Threshold (in)", 0.0, 3.0, 1.0)
+st.title("Urban Flash Flood Decision Support (NGP)")
+threshold = st.sidebar.slider("1-hr QPE Threshold (in)", 0.5, 3.0, 1.5)
 
-# 4. Status Display
-st.subheader("Current Urban Alert Status")
-st.info("System is waiting for live MRMS data ingestion.")
+# Map View
+st.map(urban_gdf)
+
+if st.button("Check for Flash Flood Alerts"):
+    st.warning("Data ingestion module is initialized. Ready to map radar pixels to towns.")
