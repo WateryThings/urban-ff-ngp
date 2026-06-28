@@ -6,9 +6,10 @@ import xarray as xr
 import gzip
 import shutil
 import os
+import json
+import pydeck as pdk
 
 # --- CONFIGURATION ---
-# Using the verified AWS folder names and our converted METRIC thresholds
 PRODUCTS = {
     "RadarOnly_QPE_01H_00.00": 25.4,               # 1.0 inch -> 25.4 mm
     "PrecipRate_00.00": 50.8,                      # 2.0 in/hr -> 50.8 mm/hr
@@ -22,46 +23,44 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 @st.cache_data
 def get_urban_centers():
-    # Load our dataset and explicitly format it to prevent Streamlit mapping errors
     df = pd.read_csv("urban_centers.csv")
-    
-    # Force column names to be spelled out exactly how Streamlit wants them
     df = df.rename(columns={'lat': 'latitude', 'lon': 'longitude'})
-    
-    # Crucial Fix: Force coordinates to be clean numbers (floats) to prevent API drops
     df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
     df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
     
-    # Drop any accidental rows that didn't have valid coordinates
-    df = df.dropna(subset=['latitude', 'longitude'])
-    return df
+    # Define default map colors (RGBA: Red, Green, Blue, Alpha/Transparency)
+    df['r'] = 169  # Cool Gray
+    df['g'] = 169
+    df['b'] = 169
+    df['radius'] = 1200 # Default size in meters
+    
+    return df.dropna(subset=['latitude', 'longitude'])
+
+@st.cache_data
+def get_cwa_outlines():
+    # Load our custom lightweight boundary lines file
+    with open("cwa_outlines.json", "r") as f:
+        return json.load(f)
 
 urban_gdf = get_urban_centers()
+cwa_geojson = get_cwa_outlines()
 
 # --- THE "FAIL-SAFE" SCANNER ---
 def get_and_extract_latest_file(fs, product_name):
-    """Downloads the newest .grib2.gz file and extracts it for cfgrib to read."""
     path = f"noaa-mrms-pds/CONUS/{product_name}/"
-    
     try:
         files = fs.ls(path)
         grib_files = [f for f in files if f.endswith('.grib2.gz')]
+        if not grib_files: return None
         
-        if not grib_files:
-            return None
-            
         latest_s3_file = grib_files[-1]
         local_gz = f"temp_{product_name}.grib2.gz"
         local_grib = f"temp_{product_name}.grib2"
         
-        # 1. Download the file from S3 anonymously
         fs.get(latest_s3_file, local_gz)
-        
-        # 2. Decompress the file
         with gzip.open(local_gz, 'rb') as f_in:
             with open(local_grib, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
-                
         os.remove(local_gz)
         return local_grib
     except Exception as e:
@@ -71,61 +70,66 @@ def get_and_extract_latest_file(fs, product_name):
 def scan_data():
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
-    
     for product, threshold in PRODUCTS.items():
         local_file_path = get_and_extract_latest_file(fs, product)
-        if not local_file_path:
-            continue
-            
+        if not local_file_path: continue
         try:
             ds = xr.open_dataset(local_file_path, engine="cfgrib")
             var_name = list(ds.data_vars)[0]
-            
             for _, row in urban_gdf.iterrows():
-                # Define our 5-mile search box around the town
                 buffer = 0.07 
                 lat = row['latitude']
-                lon = row['longitude'] % 360  # Handling the 0-360 MRMS coordinate framework
-                
-                # Slice the MRMS grid to our 5-mile box and find the MAX value inside it
+                lon = row['longitude'] % 360
                 try:
-                    val = ds.sel(
-                        latitude=slice(lat + buffer, lat - buffer),
-                        longitude=slice(lon - buffer, lon + buffer)
-                    )[var_name].max().values
-                    
-                    # Check against the metric threshold settings
+                    val = ds.sel(latitude=slice(lat + buffer, lat - buffer), longitude=slice(lon - buffer, lon + buffer))[var_name].max().values
                     if pd.notna(val) and val >= threshold:
                         unique_key = f"{row['name']}, {row['state']}"
-                        if unique_key not in results:
-                            results[unique_key] = []
+                        if unique_key not in results: results[unique_key] = []
                         results[unique_key].append(f"{product}: {val:.2f} (Threshold: {threshold})")
                 except KeyError:
                     continue
-            
             ds.close()
             os.remove(local_file_path)
-            
         except Exception as e:
             st.warning(f"Skipping processing for {product} due to error: {e}")
-            
     return results
 
-# --- UI ---
+# --- RENDERING THE ADVANCED MAP INTERFACE ---
 st.subheader("Regional CWA Flash Flood Alert Map")
 
-# 1. Set clean default styles for the map configuration
-urban_gdf['color'] = '#A9A9A9'  # Cool Gray background dots for safe towns
-urban_gdf['size'] = 20          # Small baseline indicator footprint
+def render_map(data, geojson_layer):
+    # Layer 1: The crisp vector outline of your 5 WFO borders
+    outline_layer = pdk.Layer(
+        "GeoJsonLayer",
+        geojson_layer,
+        stroke_width=3,
+        get_line_color=[0, 150, 255, 200], # Bright operational blue outlines
+        get_fill_color=[0, 0, 0, 0],       # Clear interior
+        line_width_min_pixels=2,
+    )
+    
+    # Layer 2: The interactive town points layer
+    points_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data,
+        get_position="[longitude, latitude]",
+        get_color="[r, g, b, 200]",
+        get_radius="radius",
+        pickable=True,
+    )
+    
+    # Centering the camera automatically over the heart of South Dakota
+    view_state = pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0)
+    
+    return pdk.Deck(
+        layers=[outline_layer, points_layer],
+        initial_view_state=view_state,
+        map_style="mapbox://styles/mapbox/light-v10",
+        tooltip={"text": "{name}, {state}"}
+    )
 
-# 2. Create an in-place placeholder for smooth interface transitions
 map_placeholder = st.empty()
-
-# Guard rail: Check if our dataframe contains data before initializing map
-if not urban_gdf.empty:
-    map_placeholder.map(urban_gdf, color='color', size='size')
-else:
-    st.error("The urban_centers.csv data is empty. Please verify your data generation step.")
+map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
 
 if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
@@ -133,20 +137,22 @@ if st.button("Refresh & Scan"):
         
         if alert_results:
             st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-            
-            # Match alert results cleanly back to our custom dataframe
             alerted_towns = [key.split(",")[0].strip() for key in alert_results.keys()]
             alerted_states = [key.split(",")[1].strip() for key in alert_results.keys()]
             
-            # Adjust the dynamic mapping visual states for alerted domains
+            # Switch threat locations to bright warning red and scale up size metrics
             for name, state in zip(alerted_towns, alerted_states):
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'color'] = '#FF0000'
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'size'] = 1000
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'r'] = 255
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'g'] = 0
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'b'] = 0
+                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'radius'] = 15000
             
-            # Redraw map seamlessly
-            map_placeholder.map(urban_gdf, color='color', size='size')
+            # Instantly redraw the new data over the system interface
+            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
             st.json(alert_results)
-            
         else:
             st.success("✅ All systems normal across all 5 operational WFO domains.")
-            map_placeholder.map(urban_gdf, color='color', size='size')
+            # Revert styles back to calm background parameters if everything clears out
+            urban_gdf['r'], urban_gdf['g'], urban_gdf['b'] = 169, 169, 169
+            urban_gdf['radius'] = 1200
+            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
