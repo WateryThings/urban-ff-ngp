@@ -112,8 +112,13 @@ def scan_data():
 # --- UI ---
 st.subheader("Urban Flash Flood Alert Map")
 
-# Streamlit natively handles plotting latitudes and longitudes from a dataframe
-st.map(urban_gdf)
+# 1. Set default styles for the map: Gray and Small
+urban_gdf['color'] = '#A9A9A9'  # Hex code for Gray
+urban_gdf['size'] = 20          # Small dot
+
+# 2. Create a placeholder so we can update the map in-place later
+map_placeholder = st.empty()
+map_placeholder.map(urban_gdf, color='color', size='size')
 
 if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing spatial thresholds..."):
@@ -121,6 +126,16 @@ if st.button("Refresh & Scan"):
         
         if alert_results:
             st.error("🚨 THRESHOLDS EXCEEDED:")
+            
+            # Find exactly which towns triggered the alert
+            alerted_towns = list(alert_results.keys())
+            
+            # 3. Light them up! Change alerted towns to Bright Red and make them HUGE
+            urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'color'] = '#FF0000'
+            urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'size'] = 1000
+            
+            # 4. Redraw the map with the new danger zones highlighted
+            map_placeholder.map(urban_gdf, color='color', size='size')
+            
+            # Print the detailed JSON readouts below the map
             st.json(alert_results)
-        else:
-            st.success("✅ All systems normal. No locations currently exceed thresholds.")
