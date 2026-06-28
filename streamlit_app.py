@@ -184,11 +184,12 @@ st.subheader("Regional CWA Flash Flood Alert Map")
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
-    # NEW BUG FIX: The radar is now permanently appended to the map structure. 
-    # Instead of deleting it when unchecked, it just goes invisible, keeping the camera zoom perfectly intact.
+    # MY APOLOGIES: Properly reverted back to BitmapLayer using the IEM WMS engine.
+    # The 'visible' property allows zoom-locking to work flawlessly!
     radar_layer = pdk.Layer(
-        "TileLayer",
-        data="https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png",
+        "BitmapLayer",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:4326&bbox=-110,40,-90,52&width=1200&height=800&format=image/png&transparent=true",
+        bounds=[-110.0, 40.0, -90.0, 52.0],
         opacity=0.55,
         visible=show_radar
     )
