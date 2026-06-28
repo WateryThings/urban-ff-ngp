@@ -25,6 +25,7 @@ st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
 # --- AUTOMATED OPERATIONS TIMER ---
+# Automatically refreshes the entire web application every 120,000 milliseconds (2 minutes)
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
@@ -172,7 +173,7 @@ st.subheader("Regional CWA Flash Flood Alert Map")
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
-    # Base Layer: NOAA nowCOAST Real-time MRMS Base Reflectivity (Exported Layer 1)
+    # Base Layer: NOAA nowCOAST Real-time MRMS Base Reflectivity (Secured HTTPS Endpoint Layer 1)
     if show_radar:
         radar_layer = pdk.Layer(
             "BitmapLayer",
