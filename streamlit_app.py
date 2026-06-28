@@ -24,7 +24,7 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
 # --- PROTOTYPE WARNING BANNER ---
-st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will likely break at some point, maybe even now!")
+st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress, similar to C3P0 in The Phantom Menace and will likely break at some point.")
 
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
@@ -182,28 +182,33 @@ def scan_data():
 st.subheader("Regional CWA Flash Flood Alert Map")
 
 def render_map(cwa_layer, city_shapes, show_radar):
-    # Base Layer: High-Availability Iowa Mesonet WMS Engine
+    layers = []
+    
+    # NEW BUG FIX: The radar is now permanently appended to the map structure. 
+    # Instead of deleting it when unchecked, it just goes invisible, keeping the camera zoom perfectly intact.
     radar_layer = pdk.Layer(
-        "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q-900913&srs=EPSG:4326&bbox=-110,40,-90,52&width=1200&height=800&format=image/png&transparent=true",
-        bounds=[-110.0, 40.0, -90.0, 52.0],
+        "TileLayer",
+        data="https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png",
         opacity=0.55,
         visible=show_radar
     )
+    layers.append(radar_layer)
 
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
+    layers.append(outline_layer)
     
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
     )
+    layers.append(urban_polygon_layer)
     
     return pdk.Deck(
-        layers=[radar_layer, outline_layer, urban_polygon_layer],
+        layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
         map_style="light", tooltip={"text": "{name}"}
     )
