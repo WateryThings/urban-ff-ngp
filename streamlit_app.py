@@ -11,7 +11,7 @@ THRESHOLDS = {
     "1-hr Radar Only QPE": 1.0,
     "MRMS Instantaneous Rate": 2.0,
     "CREST Unit Streamflow": 200.0,
-    "Hydrophobic" Unit Streamflow: 1000.0
+    "Hydrophobic Unit Streamflow": 1000.0
 }
 
 # Persistent buffer for 6-minute smoothing (3 scans * 2 mins = 6 mins)
