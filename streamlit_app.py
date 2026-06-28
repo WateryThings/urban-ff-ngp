@@ -182,33 +182,28 @@ def scan_data():
 st.subheader("Regional CWA Flash Flood Alert Map")
 
 def render_map(cwa_layer, city_shapes, show_radar):
-    layers = []
-    
-    # NEW BULLETPROOF SOLUTION: Iowa Environmental Mesonet (IEM) NEXRAD Tile Server
-    # Bypasses all NOAA CORS blocking issues and streams seamlessly.
-    if show_radar:
-        radar_layer = pdk.Layer(
-            "TileLayer",
-            data="https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png",
-            opacity=0.55
-        )
-        layers.append(radar_layer)
+    # Base Layer: High-Availability Iowa Mesonet WMS Engine
+    radar_layer = pdk.Layer(
+        "BitmapLayer",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q-900913&srs=EPSG:4326&bbox=-110,40,-90,52&width=1200&height=800&format=image/png&transparent=true",
+        bounds=[-110.0, 40.0, -90.0, 52.0],
+        opacity=0.55,
+        visible=show_radar
+    )
 
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
-    layers.append(outline_layer)
     
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
     )
-    layers.append(urban_polygon_layer)
     
     return pdk.Deck(
-        layers=layers,
+        layers=[radar_layer, outline_layer, urban_polygon_layer],
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
         map_style="light", tooltip={"text": "{name}"}
     )
