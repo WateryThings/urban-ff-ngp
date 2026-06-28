@@ -27,10 +27,6 @@ def get_urban_centers():
     df = df.rename(columns={'lat': 'latitude', 'lon': 'longitude'})
     df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
     df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-    
-    # Baseline gray styling for town points
-    df['r'], df['g'], df['b'] = 169, 169, 169
-    df['radius'] = 1200 
     return df.dropna(subset=['latitude', 'longitude'])
 
 @st.cache_data
@@ -41,6 +37,12 @@ def load_json_layer(filepath):
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
+
+# Initialize default quiet styling for all urban polygon shapes
+# Each polygon starts as a soft translucent gray [Red, Green, Blue, Alpha]
+for feature in urban_shapes_geojson["features"]:
+    feature["properties"]["fill_color"] = [180, 180, 180, 50]   # Translucent gray
+    feature["properties"]["line_color"] = [120, 120, 120, 100]  # Soft gray borders
 
 # --- THE "FAIL-SAFE" SCANNER ---
 def get_and_extract_latest_file(fs, product_name):
@@ -94,67 +96,64 @@ def scan_data():
 # --- RENDERING THE ADVANCED MAP INTERFACE ---
 st.subheader("Regional CWA Flash Flood Alert Map")
 
-def render_map(data, cwa_layer, city_shapes):
+def render_map(cwa_layer, city_shapes):
     # Layer 1: The outer operational CWA outline
     outline_layer = pdk.Layer(
         "GeoJsonLayer",
         cwa_layer,
         stroke_width=3,
-        get_line_color=[0, 150, 255, 255], 
+        get_line_color=[0, 150, 255, 255], # Operational blue perimeter 
         get_fill_color=[0, 0, 0, 0],       
         line_width_min_pixels=2,
     )
     
-    # Layer 2: AWIPS style urban boundary polygons
+    # Layer 2: The pure AWIPS urban footprints (No points/dots cluttering the screen!)
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer",
         city_shapes,
-        get_line_color=[120, 120, 120, 100],  # Subtle gray borders
-        get_fill_color=[180, 180, 180, 40],   # Translucent fill footprint
-        extruded=False,
-    )
-    
-    # Layer 3: Interactive town nodes layer
-    points_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data,
-        get_position="[longitude, latitude]",
-        get_color="[r, g, b, 200]",
-        get_radius="radius",
+        get_line_color="properties.line_color",
+        get_fill_color="properties.fill_color",
         pickable=True,
+        extruded=False,
     )
     
     view_state = pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0)
     
     return pdk.Deck(
-        layers=[outline_layer, urban_polygon_layer, points_layer],
+        layers=[outline_layer, urban_polygon_layer],
         initial_view_state=view_state,
         map_style="light",  
-        tooltip={"text": "{name}, {state}"}
+        tooltip={"text": "{name}"} # Hovering your cursor over the shading will display the city footprint name
     )
 
 map_placeholder = st.empty()
-map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
+map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
 
 if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
         alert_results = scan_data()
         
+        # Reset colors back to clean baseline translucent gray first
+        for feature in urban_shapes_geojson["features"]:
+            feature["properties"]["fill_color"] = [180, 180, 180, 50]
+            feature["properties"]["line_color"] = [120, 120, 120, 100]
+            
         if alert_results:
             st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-            alerted_towns = [key.split(",")[0].strip() for key in alert_results.keys()]
-            alerted_states = [key.split(",")[1].strip() for key in alert_results.keys()]
             
-            for name, state in zip(alerted_towns, alerted_states):
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'r'] = 255
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'g'] = 0
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'b'] = 0
-                urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'radius'] = 15000
+            # Extract just the raw town names that tripped the alerts
+            alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
             
-            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
+            # Loop through the GeoJSON polygon elements and turn matching names solid bright warning red!
+            for feature in urban_shapes_geojson["features"]:
+                feat_name = str(feature["properties"]["name"]).upper()
+                # Check if any part of the Census footprint name matches our alerted town registry
+                if any(town in feat_name for town in alerted_towns):
+                    feature["properties"]["fill_color"] = [255, 0, 0, 180]  # Vivid Warning Red
+                    feature["properties"]["line_color"] = [150, 0, 0, 255]  # Deep Red Boundary
+            
+            map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
             st.json(alert_results)
         else:
             st.success("✅ All systems normal across all 5 operational WFO domains.")
-            urban_gdf['r'], urban_gdf['g'], urban_gdf['b'] = 169, 169, 169
-            urban_gdf['radius'] = 1200
-            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
+            map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
