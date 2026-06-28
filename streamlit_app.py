@@ -28,21 +28,19 @@ def get_urban_centers():
     df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
     df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
     
-    # Define default map colors (RGBA: Red, Green, Blue, Alpha/Transparency)
-    df['r'] = 169  # Cool Gray
-    df['g'] = 169
-    df['b'] = 169
-    df['radius'] = 1200 # Default size in meters
-    
+    # Baseline gray styling for town points
+    df['r'], df['g'], df['b'] = 169, 169, 169
+    df['radius'] = 1200 
     return df.dropna(subset=['latitude', 'longitude'])
 
 @st.cache_data
-def get_cwa_outlines():
-    with open("cwa_outlines.json", "r") as f:
+def load_json_layer(filepath):
+    with open(filepath, "r") as f:
         return json.load(f)
 
 urban_gdf = get_urban_centers()
-cwa_geojson = get_cwa_outlines()
+cwa_geojson = load_json_layer("cwa_outlines.json")
+urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
 # --- THE "FAIL-SAFE" SCANNER ---
 def get_and_extract_latest_file(fs, product_name):
@@ -96,18 +94,27 @@ def scan_data():
 # --- RENDERING THE ADVANCED MAP INTERFACE ---
 st.subheader("Regional CWA Flash Flood Alert Map")
 
-def render_map(data, geojson_layer):
-    # Layer 1: The crisp vector outline of your 5 WFO borders
+def render_map(data, cwa_layer, city_shapes):
+    # Layer 1: The outer operational CWA outline
     outline_layer = pdk.Layer(
         "GeoJsonLayer",
-        geojson_layer,
+        cwa_layer,
         stroke_width=3,
-        get_line_color=[0, 150, 255, 255], # Bright operational blue outlines
-        get_fill_color=[0, 0, 0, 0],       # Clear interior
+        get_line_color=[0, 150, 255, 255], 
+        get_fill_color=[0, 0, 0, 0],       
         line_width_min_pixels=2,
     )
     
-    # Layer 2: The interactive town points layer
+    # Layer 2: AWIPS style urban boundary polygons
+    urban_polygon_layer = pdk.Layer(
+        "GeoJsonLayer",
+        city_shapes,
+        get_line_color=[120, 120, 120, 100],  # Subtle gray borders
+        get_fill_color=[180, 180, 180, 40],   # Translucent fill footprint
+        extruded=False,
+    )
+    
+    # Layer 3: Interactive town nodes layer
     points_layer = pdk.Layer(
         "ScatterplotLayer",
         data,
@@ -117,18 +124,17 @@ def render_map(data, geojson_layer):
         pickable=True,
     )
     
-    # Centering the camera automatically over the heart of South Dakota
     view_state = pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0)
     
     return pdk.Deck(
-        layers=[outline_layer, points_layer],
+        layers=[outline_layer, urban_polygon_layer, points_layer],
         initial_view_state=view_state,
-        map_style="light",  # Force the classic open-source light map of the United States to render
+        map_style="light",  
         tooltip={"text": "{name}, {state}"}
     )
 
 map_placeholder = st.empty()
-map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
+map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
 
 if st.button("Refresh & Scan"):
     with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
@@ -139,19 +145,16 @@ if st.button("Refresh & Scan"):
             alerted_towns = [key.split(",")[0].strip() for key in alert_results.keys()]
             alerted_states = [key.split(",")[1].strip() for key in alert_results.keys()]
             
-            # Switch threat locations to bright warning red and scale up size metrics
             for name, state in zip(alerted_towns, alerted_states):
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'r'] = 255
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'g'] = 0
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'b'] = 0
                 urban_gdf.loc[(urban_gdf['name'] == name) & (urban_gdf['state'] == state), 'radius'] = 15000
             
-            # Instantly redraw the new data over the system interface
-            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
+            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
             st.json(alert_results)
         else:
             st.success("✅ All systems normal across all 5 operational WFO domains.")
-            # Revert styles back to calm background parameters if everything clears out
             urban_gdf['r'], urban_gdf['g'], urban_gdf['b'] = 169, 169, 169
             urban_gdf['radius'] = 1200
-            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson))
+            map_placeholder.pydeck_chart(render_map(urban_gdf, cwa_geojson, urban_shapes_geojson))
