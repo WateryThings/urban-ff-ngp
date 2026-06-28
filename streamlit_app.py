@@ -25,6 +25,7 @@ st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
 # --- AUTOMATED OPERATIONS TIMER ---
+# Automatically refreshes the entire web application every 120,000 milliseconds (2 minutes)
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
@@ -154,80 +155,4 @@ def scan_data():
                     v3 = datasets[2].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[2]].max().values
                     
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
-                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                            key = f"{row['name']}, {row['state']}"
-                            if key not in results: results[key] = []
-                            results[key].append(f"Sustained Rain Rate (3 Scans): Min Peak {min(v1,v2,v3):.2f} (Threshold: {RAIN_RATE_THRESH})")
-            for d in datasets: d.close()
-        except Exception:
-            pass
-        for g in local_gribs:
-            if g and os.path.exists(g): os.remove(g)
-            
-    return results
-
-# --- RENDERING THE ADVANCED MAP INTERFACE ---
-st.subheader("Regional CWA Flash Flood Alert Map")
-
-def render_map(cwa_layer, city_shapes, show_radar):
-    layers = []
-    
-    # Speed Fix: Using a direct WMS exported single-image bitmap footprint to avoid tile loading blocks
-    if show_radar:
-        radar_layer = pdk.Layer(
-            "BitmapLayer",
-            image="https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/radar_meteo_imagery_nexrad_time/MapServer/export?bbox=-110,40,-90,52&bboxSR=4326&layers=show:3&size=1200,800&format=png32&transparent=true&f=image",
-            bounds=[-110.0, 40.0, -90.0, 52.0],
-            opacity=0.55
-        )
-        layers.append(radar_layer)
-
-    # Layer 1: The outer operational CWA outline (Crisp Blue Perimeter)
-    outline_layer = pdk.Layer(
-        "GeoJsonLayer", cwa_layer, stroke_width=3,
-        get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
-    )
-    layers.append(outline_layer)
-    
-    # Layer 2: The pure AWIPS-style urban footprints
-    urban_polygon_layer = pdk.Layer(
-        "GeoJsonLayer", city_shapes,
-        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        pickable=True, extruded=False,
-    )
-    layers.append(urban_polygon_layer)
-    
-    return pdk.Deck(
-        layers=layers,
-        initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
-        map_style="light", tooltip={"text": "{name}"}
-    )
-
-map_placeholder = st.empty()
-map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
-
-with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results = scan_data()
-    
-    for feature in urban_shapes_geojson["features"]:
-        feature["properties"]["fill_color"] = [180, 180, 180, 50]
-        feature["properties"]["line_color"] = [120, 120, 120, 100]
-        
-    if alert_results:
-        st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-        alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
-        
-        for feature in urban_shapes_geojson["features"]:
-            feat_name = str(feature["properties"]["name"]).upper()
-            if any(town in feat_name for town in alerted_towns):
-                feature["properties"]["fill_color"] = [255, 0, 0, 180]  
-                feature["properties"]["line_color"] = [150, 0, 0, 255]  
-        
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
-        st.json(alert_results)
-    else:
-        st.success("✅ All systems normal across all 5 operational WFO domains.")
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
-
-if st.button("Refresh & Scan"):
-    st.rerun()
+                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN
