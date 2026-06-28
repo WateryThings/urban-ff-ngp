@@ -22,14 +22,23 @@ if 'rate_buffer' not in st.session_state:
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("Urban Flash Flood Decision Support (NGP)")
 
-# 1. Fetch Urban Centers (Cached)
+# 1. Fetch Urban Centers with better handling
 @st.cache_data
 def get_urban_centers():
+    # We will fetch ND and SD separately to reduce the load on the server
     tags = {'place': ['city', 'town', 'village', 'hamlet']}
-    return ox.features_from_place(["North Dakota, USA", "South Dakota, USA"], tags=tags)
-
-with st.spinner("Loading urban centers..."):
-    urban_gdf = get_urban_centers()
+    
+    # Increase the timeout for the request
+    ox.settings.timeout = 180 
+    
+    try:
+        gdf_nd = ox.features_from_place("North Dakota, USA", tags=tags)
+        gdf_sd = ox.features_from_place("South Dakota, USA", tags=tags)
+        # Combine them
+        return pd.concat([gdf_nd, gdf_sd])
+    except Exception as e:
+        st.error(f"Error fetching data: {e}. The OSM server might be busy. Try again in a minute!")
+        return gpd.GeoDataFrame()
 
 # 2. Logic: The Alert Engine
 def evaluate_alert(qpe_val, inst_rate_history, crest_val, hydrophobic_val):
