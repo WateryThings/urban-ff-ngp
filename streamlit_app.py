@@ -8,6 +8,7 @@ import shutil
 import os
 import json
 import pydeck as pdk
+from streamlit_autorefresh import st_autorefresh
 
 # --- CONFIGURATION ---
 PRODUCTS = {
@@ -21,32 +22,38 @@ PRODUCTS = {
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("Urban Flash Flood Decision Support (NGP)")
 
+# --- AUTOMATED OPERATIONS TIMER ---
+# Automatically refreshes the entire web application every 120,000 milliseconds (2 minutes)
+# This keeps data completely synced with rolling MRMS bucket arrivals without user interaction
+count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
+
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-### Operational Overview
-* **Coverage Area:** Urban polygons within the FGF, BIS, ABR, FSD, and UNR County Warning Areas (CWAs).
-* **Data Processing:** Evaluates a 5-mile geographic buffer extended outward from the polygon edges of each community. Extracts the maximum pixel value from the latest 1km MRMS grids within that buffered bounding box.
+### Operational Use:
+**BLUF:** When any of the below criteria are exceeded within 5-miles of an urban area, the map will light up red.
 """)
 
 col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds
-    * **1-Hour Radar QPE:** $\ge$ **1.00 in** *(25.4 mm)*
-    * **Instantaneous Rain Rate:** $\ge$ **2.00 in/hr** *(50.8 mm/hr)*
-    * **FLASH CREST Max Unit Streamflow:** $\ge$ **200 cfs/sq mi** *($2.19\text{ m}^3/\text{s/km}^2$)*
-    * **FLASH Hydro-D Max Unit Streamflow:** $\ge$ **1000 cfs/sq mi** *($10.93\text{ m}^3/\text{s/km}^2$)*
+    #### Monitored Products & Thresholds for Urban Areas:
+    * **1-hr MRMS QPE:** Greater or equal than 1.0"
+    * **MRMS Instantaneous Rain Rates:** Greater than or equal to 2.0"/1hr
+    * **FLASH CREST Max Unit Streamflow:** Greater than or equal to 200 cfs/sq. mi.
+    * **FLASH Hydrophobic Max Unit Streamflow:** Greater than or equal to 1000 cfs/sq. mi.
     """)
 
 with col2:
     st.markdown("""
     #### Map Symbology & System States
-    * **Refresh & Scan:** Manually queries and decompresses data from the NOAA MRMS AWS bucket.
+    * **Automated Refresh:** The system automatically executes a full background scan every **2 minutes** to sync with live data cycles.
+    * **Manual Interrogation:** Click **"Refresh & Scan"** to manually force an immediate data query of the NOAA MRMS AWS bucket.
     * **Translucent Gray Polygons:** Maximum values within the 5-mile community edge buffer are below active thresholds.
     * **Solid Red Polygons:** One or more MRMS products meet or exceed the listed thresholds within the buffered area. Detailed readings will output via JSON text below the map.
     """)
 
+st.markdown(f"*System Status: Running automated tracking cycle. (Auto-Scan ID: {count})*")
 st.markdown("---")
 
 @st.cache_data
@@ -162,26 +169,31 @@ def render_map(cwa_layer, city_shapes):
 map_placeholder = st.empty()
 map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
 
-if st.button("Refresh & Scan"):
-    with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
-        alert_results = scan_data()
+# Automatically run the scanner on initial page load or when the autorefresh hits
+with st.spinner("Analyzing current regional CWA footprints..."):
+    alert_results = scan_data()
+    
+    # Reset colors back to clean baseline gray first
+    for feature in urban_shapes_geojson["features"]:
+        feature["properties"]["fill_color"] = [180, 180, 180, 50]
+        feature["properties"]["line_color"] = [120, 120, 120, 100]
+        
+    if alert_results:
+        st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
+        alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
         
         for feature in urban_shapes_geojson["features"]:
-            feature["properties"]["fill_color"] = [180, 180, 180, 50]
-            feature["properties"]["line_color"] = [120, 120, 120, 100]
-            
-        if alert_results:
-            st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-            alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
-            
-            for feature in urban_shapes_geojson["features"]:
-                feat_name = str(feature["properties"]["name"]).upper()
-                if any(town in feat_name for town in alerted_towns):
-                    feature["properties"]["fill_color"] = [255, 0, 0, 180]  
-                    feature["properties"]["line_color"] = [150, 0, 0, 255]  
-            
-            map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
-            st.json(alert_results)
-        else:
-            st.success("✅ All systems normal across all 5 operational WFO domains.")
-            map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+            feat_name = str(feature["properties"]["name"]).upper()
+            if any(town in feat_name for town in alerted_towns):
+                feature["properties"]["fill_color"] = [255, 0, 0, 180]  
+                feature["properties"]["line_color"] = [150, 0, 0, 255]  
+        
+        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+        st.json(alert_results)
+    else:
+        st.success("✅ All systems normal across all 5 operational WFO domains.")
+        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+
+# Force manual verification override button
+if st.button("Refresh & Scan"):
+    st.rerun()
