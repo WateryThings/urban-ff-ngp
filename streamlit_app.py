@@ -38,7 +38,6 @@ def get_urban_centers():
 
 @st.cache_data
 def get_cwa_outlines():
-    # Load our custom lightweight boundary lines file
     with open("cwa_outlines.json", "r") as f:
         return json.load(f)
 
@@ -103,7 +102,7 @@ def render_map(data, geojson_layer):
         "GeoJsonLayer",
         geojson_layer,
         stroke_width=3,
-        get_line_color=[0, 150, 255, 200], # Bright operational blue outlines
+        get_line_color=[0, 150, 255, 255], # Bright operational blue outlines
         get_fill_color=[0, 0, 0, 0],       # Clear interior
         line_width_min_pixels=2,
     )
@@ -124,7 +123,7 @@ def render_map(data, geojson_layer):
     return pdk.Deck(
         layers=[outline_layer, points_layer],
         initial_view_state=view_state,
-        map_style="mapbox://styles/mapbox/light-v10",
+        map_style="light",  # Force the classic open-source light map of the United States to render
         tooltip={"text": "{name}, {state}"}
     )
 
