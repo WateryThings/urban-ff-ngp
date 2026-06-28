@@ -22,7 +22,7 @@ st.title("Urban Flash Flood Decision Support (NGP)")
 
 @st.cache_data
 def get_urban_centers():
-    # Load our massive new Census dataset (make sure the columns are name, state, lat, lon!)
+    # Load our customized dataset matched precisely to the 5 targeted CWA footprints
     return pd.read_csv("urban_centers.csv")
 
 urban_gdf = get_urban_centers()
@@ -30,12 +30,10 @@ urban_gdf = get_urban_centers()
 # --- THE "FAIL-SAFE" SCANNER ---
 def get_and_extract_latest_file(fs, product_name):
     """Downloads the newest .grib2.gz file and extracts it for cfgrib to read."""
-    # MRMS rolling archive usually drops files right into this root prefix
     path = f"noaa-mrms-pds/CONUS/{product_name}/"
     
     try:
         files = fs.ls(path)
-        # Find the most recent .grib2.gz file
         grib_files = [f for f in files if f.endswith('.grib2.gz')]
         
         if not grib_files:
@@ -45,17 +43,15 @@ def get_and_extract_latest_file(fs, product_name):
         local_gz = f"temp_{product_name}.grib2.gz"
         local_grib = f"temp_{product_name}.grib2"
         
-        # 1. Download the file from S3
+        # 1. Download the file from S3 anonymously
         fs.get(latest_s3_file, local_gz)
         
-        # 2. Decompress the file (cfgrib cannot read .gz natively)
+        # 2. Decompress the file
         with gzip.open(local_gz, 'rb') as f_in:
             with open(local_grib, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
                 
-        # Clean up the compressed file to save space
         os.remove(local_gz)
-        
         return local_grib
     except Exception as e:
         st.warning(f"Failed to fetch {product_name}: {e}")
@@ -71,36 +67,31 @@ def scan_data():
             continue
             
         try:
-            # Now we can safely open the unzipped file
             ds = xr.open_dataset(local_file_path, engine="cfgrib")
-            
-            # Automatically grab the first data variable (the radar/model value)
             var_name = list(ds.data_vars)[0]
             
             for _, row in urban_gdf.iterrows():
                 # Define our 5-mile search box around the town
                 buffer = 0.07 
                 lat = row['lat']
-                lon = row['lon'] % 360  # Catching that 0-360 longitude trap!
+                lon = row['lon'] % 360  # Handling the 0-360 MRMS coordinate framework
                 
                 # Slice the MRMS grid to our 5-mile box and find the MAX value inside it
-                # Note: MRMS latitudes are stored North to South, so we slice max to min
                 try:
                     val = ds.sel(
                         latitude=slice(lat + buffer, lat - buffer),
                         longitude=slice(lon - buffer, lon + buffer)
                     )[var_name].max().values
                     
-                    # Ensure the value isn't empty data (NaN), and check against threshold
+                    # Check against the metric threshold settings
                     if pd.notna(val) and val >= threshold:
-                        if row['name'] not in results:
-                            results[row['name']] = []
-                        results[row['name']].append(f"{product}: {val:.2f} (Threshold: {threshold})")
+                        unique_key = f"{row['name']}, {row['state']}"
+                        if unique_key not in results:
+                            results[unique_key] = []
+                        results[unique_key].append(f"{product}: {val:.2f} (Threshold: {threshold})")
                 except KeyError:
-                    # If the town falls completely off the MRMS grid edge, gracefully skip it
                     continue
             
-            # Clean up the unzipped file to keep the server clean
             ds.close()
             os.remove(local_file_path)
             
@@ -112,30 +103,32 @@ def scan_data():
 # --- UI ---
 st.subheader("Urban Flash Flood Alert Map")
 
-# 1. Set default styles for the map: Gray and Small
-urban_gdf['color'] = '#A9A9A9'  # Hex code for Gray
-urban_gdf['size'] = 20          # Small dot
+# Set clean default styles for the map configuration
+urban_gdf['color'] = '#A9A9A9'  # Cool Gray background dots
+urban_gdf['size'] = 20          # Small baseline indicator footprint
 
-# 2. Create a placeholder so we can update the map in-place later
+# Create an in-place placeholder for smooth interface transitions
 map_placeholder = st.empty()
 map_placeholder.map(urban_gdf, color='color', size='size')
 
 if st.button("Refresh & Scan"):
-    with st.spinner("Downloading MRMS grids and analyzing spatial thresholds..."):
+    with st.spinner("Downloading MRMS grids and analyzing regional CWA footprints..."):
         alert_results = scan_data()
         
         if alert_results:
-            st.error("🚨 THRESHOLDS EXCEEDED:")
+            st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
             
-            # Find exactly which towns triggered the alert
-            alerted_towns = list(alert_results.keys())
+            # Match alert results cleanly back to our custom dataframe
+            alerted_towns = [key.split(",")[0] for key in alert_results.keys()]
             
-            # 3. Light them up! Change alerted towns to Bright Red and make them HUGE
+            # Adjust the dynamic mapping visual states for alerted domains
             urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'color'] = '#FF0000'
             urban_gdf.loc[urban_gdf['name'].isin(alerted_towns), 'size'] = 1000
             
-            # 4. Redraw the map with the new danger zones highlighted
+            # Redraw map seamlessly
             map_placeholder.map(urban_gdf, color='color', size='size')
-            
-            # Print the detailed JSON readouts below the map
             st.json(alert_results)
+            
+        else:
+            st.success("✅ All systems normal across all 5 operational WFO domains.")
+            map_placeholder.map(urban_gdf, color='color', size='size')
