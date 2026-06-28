@@ -1,8 +1,6 @@
 import streamlit as st
-import osmnx as ox
 import numpy as np
 import pandas as pd
-import geopandas as gpd
 import s3fs
 from collections import deque
 
@@ -21,20 +19,18 @@ if 'rate_buffer' not in st.session_state:
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 st.title("Urban Flash Flood Decision Support (NGP)")
 
-# 1. Fetch Urban Centers (Divide and Conquer approach)
+# 1. Fetch Urban Centers from local CSV
 @st.cache_data
 def get_urban_centers():
-    tags = {'place': ['city', 'town', 'village', 'hamlet']}
-    ox.settings.timeout = 180 
     try:
-        gdf_nd = ox.features_from_place("North Dakota, USA", tags=tags)
-        gdf_sd = ox.features_from_place("South Dakota, USA", tags=tags)
-        return pd.concat([gdf_nd, gdf_sd])
+        # Reads the file you created on GitHub
+        df = pd.read_csv("urban_centers.csv")
+        return df
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return gpd.GeoDataFrame()
+        st.error(f"Error loading urban_centers.csv: {e}")
+        return pd.DataFrame()
 
-with st.spinner("Loading urban centers..."):
+with st.spinner("Loading locations..."):
     urban_gdf = get_urban_centers()
 
 # 2. Alert Engine Logic
@@ -56,20 +52,16 @@ for k, v in THRESHOLDS.items():
 st.subheader("Urban Flash Flood Alert Map")
 
 # Map Rendering
-if urban_gdf is not None and not urban_gdf.empty:
-    if 'geometry' in urban_gdf.columns:
-        st.map(urban_gdf)
-    else:
-        st.write("Data loaded but contains no geometry to map.")
+if not urban_gdf.empty:
+    st.map(urban_gdf)
 else:
-    st.warning("Urban center data is currently unavailable. Please check the logs.")
+    st.warning("No location data found. Please ensure urban_centers.csv is in the repository.")
 
 # Simulation Button
 if st.button("Refresh Data & Check Alerts"):
     fs = s3fs.S3FileSystem(anon=True)
-    st.info("Pipeline connected to NOAA S3 bucket. Fetching latest grids...")
+    st.info("Pipeline connected to NOAA S3 bucket.")
     try:
-        st.success("Successfully accessed NOAA S3 bucket.")
         # Logic test with placeholder values
         is_alert, smoothed_val = evaluate_alert(0.5, st.session_state.rate_buffer, 150, 800)
         if is_alert:
