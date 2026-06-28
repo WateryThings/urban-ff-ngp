@@ -32,7 +32,7 @@ st.markdown("""
 **BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding based on any of the below products & criteria being met within a 5-mile buffer.
 """)
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
@@ -51,10 +51,13 @@ with col2:
     * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
-# --- TIMESTAMP READOUT (FIXED FOR CDT) ---
-# Fetch absolute UTC time from the cloud server
+with col3:
+    st.markdown("#### Map Layers:")
+    # Instantaneous layout toggle switch for the radar overlay
+    toggle_radar = st.checkbox("Overlay MRMS Reflectivity", value=False, help="Streams live NOAA lowest-altitude reflectivity tiles over the canvas.")
+
+# --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
-# Force Central Daylight Time (CDT) by applying a fixed -5 hour offset from UTC
 cdt_now = utc_now - timedelta(hours=5)
 
 local_time_str = cdt_now.strftime("%I:%M %p cdt").lower()
@@ -116,7 +119,7 @@ def scan_data():
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
     
-    # Part 1: Standard Products Check (Single Latest Scan Evaluation)
+    # Part 1: Standard Products Check
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
         if not latest_files: continue
@@ -137,7 +140,7 @@ def scan_data():
         except Exception:
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    # Part 2: Rain Rate Check (3 Consecutive Scans Continuity Filter)
+    # Part 2: Rain Rate Check (3 Scans Continuity)
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
@@ -168,24 +171,43 @@ def scan_data():
 # --- RENDERING THE ADVANCED MAP INTERFACE ---
 st.subheader("Regional CWA Flash Flood Alert Map")
 
-def render_map(cwa_layer, city_shapes):
+def render_map(cwa_layer, city_shapes, show_radar):
+    layers = []
+    
+    # Layer 0 (Optional Base Layer): NOAA nowCOAST Real-time MRMS Reflectivity WMS Tile Stream
+    if show_radar:
+        radar_layer = pdk.Layer(
+            "TileLayer",
+            data="https://nowcoast.noaa.gov/arcgis/services/nowcoast/radar_meteo_imagery_nexrad_time/MapServer/WmsServer?request=GetMap&service=WMS&styles=&imageSR=3857&bboxSR=3857&format=image/png32&transparent=true&version=1.3.0&width=256&height=256&crs=CRS:84&bbox={bbox}",
+            get_tile_data=None,
+            opacity=0.45,  # Soft transparency so town polygons remain visible underneath
+            tile_size=256
+        )
+        layers.append(radar_layer)
+
+    # Layer 1: The outer operational CWA outline (Crisp Blue Perimeter)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
+    layers.append(outline_layer)
+    
+    # Layer 2: The pure AWIPS-style urban footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
     )
+    layers.append(urban_polygon_layer)
+    
     return pdk.Deck(
-        layers=[outline_layer, urban_polygon_layer],
+        layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
         map_style="light", tooltip={"text": "{name}"}
     )
 
 map_placeholder = st.empty()
-map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
 
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data()
@@ -204,11 +226,11 @@ with st.spinner("Analyzing current regional CWA footprints..."):
                 feature["properties"]["fill_color"] = [255, 0, 0, 180]  
                 feature["properties"]["line_color"] = [150, 0, 0, 255]  
         
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
         st.json(alert_results)
     else:
         st.success("✅ All systems normal across all 5 operational WFO domains.")
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson))
+        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
 
 if st.button("Refresh & Scan"):
     st.rerun()
