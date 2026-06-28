@@ -22,6 +22,10 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
 # --- APP LAYOUT ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
+
+# --- PROTOTYPE WARNING BANNER ---
+st.warning("⚠️ **OPERATIONAL NOTICE:** This system is an experimental prototype currently in progress (under active development). Treat all structural outputs with baseline professional caution.")
+
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
 # --- AUTOMATED OPERATIONS TIMER ---
@@ -29,7 +33,7 @@ count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town when 3 out of the 4 product thresholds are met within a 5-mile buffer of the urban bounds.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when 3 out of the 4 product thresholds are met within a 5-mile buffer.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -37,18 +41,18 @@ col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     st.markdown("""
     #### Monitored Products & Thresholds:
-    1. **MRMS 1-hr QPE:** $\ge$ 1.0"
-    2. **MRMS Instantaneous Rain Rates:** $\ge$ 2.0"/1-hr *(sustained over 3 scans)*
-    3. **FLASH CREST Max Unit Streamflow:** $\ge$ 200 cfs/sq. mi.
-    4. **FLASH Hydrophobic Max Unit Streamflow:** $\ge$ 1000 cfs/sq. mi.
+    * MRMS 1-hr QPE: $\ge$ 1.0"
+    * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
+    * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
+    * FLASH Hydrophobic Max Unit Streamflow: $\ge$ 1000 cfs/sq. mi.
     """)
 
 with col2:
     st.markdown("""
-    #### Map Symbology & Consensus Logic:
-    * Translucent Gray Polygons: Spatial baseline footprint. Monitored parameters are quiet ($<3$ active thresholds).
-    * Solid Red Polygons: **Heads-Up Consensus Alert.** Severe multi-product matching ($3$ or $4$ thresholds active). Interrogate immediately.
-    * Automated Refresh: Engine cycles every 2 minutes.
+    #### Map Symbology:
+    * Translucent Gray Polygons: Spatial extent of urban and small towns.
+    * Solid Red Polygons: 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
 with col3:
@@ -117,10 +121,9 @@ def scan_data():
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
     
-    # Initialize an isolated tracking sheet for every individual community
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
-    # 1. Evaluate the 3 core raster matrices (QPE, CREST, Hydrophobic)
+    # 1. Evaluate core raster matrices
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
         if not latest_files: continue
@@ -142,7 +145,7 @@ def scan_data():
         except Exception:
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    # 2. Evaluate the 3-Scan Sustained Instantaneous Rain Rate rule
+    # 2. Evaluate 3-Scan Sustained Rain Rate rule
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
@@ -168,7 +171,7 @@ def scan_data():
         for g in local_gribs:
             if g and os.path.exists(g): os.remove(g)
             
-    # 3. Consensus Filter: Only push alerts if at least 3 distinct thresholds are broken
+    # 3. Consensus Filter: 3 out of 4 criteria must be met
     for town_key, data in town_tallies.items():
         if data["score"] >= 3:
             results[town_key] = {
