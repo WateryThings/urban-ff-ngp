@@ -25,7 +25,7 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
 # --- PROTOTYPE WARNING BANNER ---
-st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will likely break at some point, maybe even now! TO USE THIS WEBSITE, YOU MUST BRING US ANOTHER SHRUBBERY OR WE WILL SAY...NI NI NI NI NI NI NI.")
+st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will GUARANTEE NO QUESTIONS ASKED FAIL, EVEN NOW, THIS MINUTE!")
 
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
@@ -215,7 +215,7 @@ def scan_data(cycle_count):
             if os.path.exists(local_grib): os.remove(local_grib)
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
-        local_gribs = [extract_file(fs, f"rate_{i}") for i, f in enumerate(rate_history_files)]
+        local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
         try:
             datasets = [xr.open_dataset(g, engine="cfgrib") for g in local_gribs if g]
             if len(datasets) == 3:
@@ -316,7 +316,6 @@ if alert_results:
             feature["properties"]["line_color"] = [150, 0, 0, 255]
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
-# HEADER FIX: Confirmed title swap
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
 st.pydeck_chart(render_map(
