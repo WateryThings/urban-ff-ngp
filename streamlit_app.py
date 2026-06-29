@@ -247,12 +247,15 @@ def scan_data(cycle_count):
             
             lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
             
-            # SPEED OPTIMIZATION BLOCK: Crop down to regional footprint box FIRST
-            # Box extends from 41.5°N to 50.0°N and -107.0°W to -93.5°W
+            # Crop down to regional footprint box
             master_lat_slice = slice(41.5, 50.0) if lat_ascending else slice(50.0, 41.5)
             master_lon_slice = slice(360 - 107.0, 360 - 93.5)
             
             ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice)
+            
+            # FIX: Force load the cropped data array straight into RAM memory!
+            # This makes the thousands of loop queries lightning fast in-memory tasks.
+            ds_cropped = ds_cropped.load()
             
             for _, row in urban_gdf.iterrows():
                 key = f"{row['name']}, {row['state']}"
@@ -261,7 +264,6 @@ def scan_data(cycle_count):
                 lats = [row['min_lat'], row['max_lat']]
                 lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
                 
-                # Slicing from our pre-shrunk cropped array instead of the massive nationwide layout!
                 val = ds_cropped.sel(latitude=lat_slice, longitude=slice(min_lon, max_lon))[var_name].max().values
                 
                 if pd.notna(val) and val >= threshold:
@@ -373,7 +375,7 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No hydro hazards detected across operational domains.")
+    st.success("✅ No urban hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
