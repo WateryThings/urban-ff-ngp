@@ -90,13 +90,11 @@ with col2:
 with col3:
     st.markdown("#### Map Layers:")
     toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
-    
     radar_opacity = st.slider(
         "Radar Opacity", 
         min_value=0.0, max_value=1.0, value=0.55, step=0.05,
         help="Adjust the transparency of the Base Reflectivity overlay layer."
     )
-    
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
@@ -181,16 +179,33 @@ def get_lsrs():
     except Exception:
         return {"type": "FeatureCollection", "features": []}
 
-# --- DATA EXTRACTION & DOWNLOADING ---
+# --- FIXED DATA EXTRACTION LAYER (TUNNELING INTO THE YYYYMMDD DIRECTORIES) ---
 def get_latest_files(fs, product_name, num_files=1):
-    path = f"noaa-mrms-pds/CONUS/{product_name}/"
+    now_utc = datetime.now(timezone.utc)
+    today_str = now_utc.strftime("%Y%m%d")
+    yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
+    
+    # Check today's directory folder first
+    path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
     try:
-        files = fs.ls(path)
+        files = fs.ls(path_today)
         grib_files = [f for f in files if f.endswith('.grib2.gz')]
-        if not grib_files: return []
-        return sorted(grib_files)[-num_files:]
+        if grib_files:
+            return sorted(grib_files)[-num_files:]
     except Exception:
-        return []
+        pass
+        
+    # Fallback backup: Look inside yesterday's folder if today's is fresh or empty
+    path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
+    try:
+        files = fs.ls(path_yesterday)
+        grib_files = [f for f in files if f.endswith('.grib2.gz')]
+        if grib_files:
+            return sorted(grib_files)[-num_files:]
+    except Exception:
+        pass
+        
+    return []
 
 def extract_file(fs, s3_path, idx_suffix=""):
     local_gz = f"temp_{idx_suffix}.grib2.gz"
@@ -211,7 +226,7 @@ def extract_file(fs, s3_path, idx_suffix=""):
 def scan_data(cycle_count):
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
-    logs = [] # Diagnostic Tracker
+    logs = [] 
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
@@ -230,14 +245,12 @@ def scan_data(cycle_count):
             ds = xr.open_dataset(local_grib, engine="cfgrib")
             var_name = list(ds.data_vars)[0]
             
-            # CRITICAL GIS FIX: Determine if dataset latitude arrays run North->South or South->North
             lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
             
             for _, row in urban_gdf.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 
-                # Dynamic coordinate bounds orientation check
                 lats = [row['min_lat'], row['max_lat']]
                 lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
                 
@@ -253,7 +266,6 @@ def scan_data(cycle_count):
             logs.append(f"❌ Crash during processing of {product}: {str(e)}")
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    # Output live pipeline updates straight to the Streamlit app state
     st.session_state['pipeline_diagnostic_logs'] = logs
 
     for town_key, data in town_tallies.items():
@@ -342,7 +354,6 @@ st.pydeck_chart(render_map(
     live_lsrs, toggle_lsrs
 ))
 
-# --- LIVE PIPELINE DIAGNOSTIC REPORT SIDEBAR/EXPANDER ---
 with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
     if 'pipeline_diagnostic_logs' in st.session_state:
         for log in st.session_state['pipeline_diagnostic_logs']:
