@@ -214,7 +214,7 @@ def scan_data(cycle_count):
             if os.path.exists(local_grib): os.remove(local_grib)
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
-        local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
+        local_gribs = [extract_file(fs, f"rate_{i}") for i, f in enumerate(rate_history_files)]
         try:
             datasets = [xr.open_dataset(g, engine="cfgrib") for g in local_gribs if g]
             if len(datasets) == 3:
@@ -246,7 +246,8 @@ def scan_data(cycle_count):
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     
-    # 1. Base Radar Layer (The only layer tied to the dynamic slider)
+    # SPEED OPTIMIZATION: Radar image is always loaded into memory, but toggle_radar controls 
+    # its visibility instantly on the client side without triggering a network fetch download.
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -256,9 +257,6 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(radar_layer)
 
-    # FIX: Completely removed the "opacity=" master config from all GeoJsonLayers below.
-    # Transparency is now safely controlled by the direct RGBA alpha channels.
-    
     # 2. CWA Operational Footprints
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
@@ -266,7 +264,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(outline_layer)
     
-    # 3. NWS Active Warnings
+    # 3. NWS Active Warnings (Client-side toggling enabled)
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -284,7 +282,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(urban_polygon_layer)
     
-    # 5. LSRs
+    # 5. LSRs (Client-side toggling enabled)
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -317,7 +315,7 @@ for feature in urban_shapes_geojson["features"]:
 if alert_results:
     alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
     for feature in urban_shapes_geojson["features"]:
-        feat_name = str(feature["properties"]["name"]).upper()
+        feat_name = str(feature["properties"].get("name", "")).upper()
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
@@ -330,7 +328,7 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No hydro hazards detected across operational domains.")
+    st.success("✅ No urban hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
