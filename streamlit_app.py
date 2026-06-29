@@ -23,9 +23,9 @@ PRODUCTS = {
 RAIN_RATE_PROD = "PrecipRate_00.00"
 RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
-# Buffer Constants (1 Mile converted to Decimal Degrees)
-BUFFER_DEG_LAT = 0.0144 
-BUFFER_DEG_LON = 0.0204 
+# Buffer Constants (0.5 Miles converted to Decimal Degrees)
+BUFFER_DEG_LAT = 0.0072 
+BUFFER_DEG_LON = 0.0102 
 
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
@@ -60,7 +60,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        💣 CAUTION: This tool is an experimental prototype (similar to the first moss 450 million years ago). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
+        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
     </div>
 """)
 
@@ -84,14 +84,14 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 1-mile buffer of the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 3 out of the 4** product thresholds are met within a 0.5-mile buffer of the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds:
+    #### Monitored Products & Thresholds (3/4 must be met):
     * MRMS 1-hr QPE: $\ge$ 1.0"
     * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
     * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
@@ -102,7 +102,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** 2 out of 4 MRMS products exceed the thresholds anywhere within a 1 mile buffer of the city boundaries.
+    * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere within a 0.5 mile buffer of the city boundaries.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -480,9 +480,9 @@ def scan_data(cycle_count, towns_df):
 
     st.session_state['pipeline_diagnostic_logs'] = logs
 
-    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 2 OUT OF 4 METRICS
+    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 3 OUT OF 4 METRICS
     for town_key, data in town_tallies.items():
-        if data["score"] >= 2:
+        if data["score"] >= 3:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
@@ -588,7 +588,7 @@ for feature in urban_shapes_geojson["features"]:
     if alert_results and any(town.split(",")[0].strip().upper() in feat_name for town in alert_results.keys()):
         feature["properties"]["fill_color"] = [255, 0, 0, 200]  
         feature["properties"]["line_color"] = [150, 0, 0, 255]
-        feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
+        feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
     else:
         # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
