@@ -51,7 +51,7 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * Translucent Gray Polygons: Spatial extent of urban and small towns.
+    * Bold Gray Polygons: Spatial extent of monitored urban and small towns.
     * Solid Red Polygons: 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
     * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
     """)
@@ -105,13 +105,28 @@ def get_nws_warnings():
                 # Check for our specific hydrological hazards
                 if event in ["Flash Flood Warning", "Flood Advisory"]:
                     
-                    # Extract operational details for the tooltip
                     headline = feature["properties"].get("headline", "Active Warning")
-                    area = feature["properties"].get("areaDesc", "Unknown Area")
+                    raw_area = feature["properties"].get("areaDesc", "Unknown Area")
+                    
+                    # FORMATTING FIX: Injecting the word "County" into the NWS text for clarity
+                    formatted_areas = []
+                    for a in raw_area.split(";"):
+                        a = a.strip()
+                        if "County" not in a and a != "Unknown Area":
+                            if "," in a:
+                                parts = a.split(",", 1)
+                                formatted_areas.append(f"{parts[0].strip()} County, {parts[1].strip()}")
+                            else:
+                                formatted_areas.append(f"{a} County")
+                        else:
+                            formatted_areas.append(a)
+                    
+                    # Join them nicely with a comma instead of the NWS semicolon
+                    clean_area = ", ".join(formatted_areas)
                     
                     # Inject standardized properties so Pydeck knows what to display on hover
                     feature["properties"]["name"] = f"⚠️ {event}"
-                    feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected:</b> {area}"
+                    feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected Counties:</b> {clean_area}"
                     
                     if event == "Flash Flood Warning":
                         feature["properties"]["fill_color"] = [0, 128, 0, 40]       
@@ -248,7 +263,6 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings)
     )
     layers.append(urban_polygon_layer)
     
-    # NEW TOOLTIP LOGIC: Renders an HTML string merging the name and our custom injected hover details
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
@@ -264,10 +278,9 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
     live_warnings = get_nws_warnings()
 
-# Prepare baseline shapes with default hover info
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [180, 180, 180, 50]
-    feature["properties"]["line_color"] = [120, 120, 120, 100]
+    feature["properties"]["fill_color"] = [130, 130, 130, 90]     
+    feature["properties"]["line_color"] = [50, 50, 50, 220]       
     feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
@@ -277,7 +290,6 @@ if alert_results:
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 180]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
-            # Override hover text to reflect danger state
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Regional CWA Flash Flood Alert Map")
