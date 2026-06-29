@@ -56,7 +56,21 @@ with col2:
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
-# We will let the final column handle the map toggles inside the fragment loop below
+with col3:
+    st.markdown("#### Map Layers:")
+    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
+    
+    radar_opacity = st.slider(
+        "Radar Opacity", 
+        min_value=0.0, 
+        max_value=1.0, 
+        value=0.55, 
+        step=0.05,
+        help="Adjust the transparency of the Base Reflectivity overlay layer."
+    )
+    
+    toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
+    toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
@@ -77,6 +91,7 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
+@st.cache_data
 def load_json_layer(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -281,7 +296,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
         }
     )
 
-# --- EXECUTE BACKGROUND CORE MATH SCANS ---
+# --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
     live_warnings = get_nws_warnings()
@@ -301,41 +316,21 @@ if alert_results:
             feature["properties"]["line_color"] = [150, 0, 0, 255]
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
-# --- SPEED FIX: THE STREAMLIT GRAPHICS FRAGMENT LAYER ---
-@st.fragment
-def render_isolated_map_interface():
-    # We move the interaction columns directly into the fragment zone
-    with col3:
-        st.write("") # Spacer
-        toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
-        radar_opacity = st.slider(
-            "Radar Opacity", 
-            min_value=0.0, max_value=1.0, value=0.55, step=0.05,
-            help="Adjust the transparency of the Base Reflectivity overlay layer."
-        )
-        toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories and Flash Flood Warnings.")
-        toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports for Flash Flooding over the past 24 hours.")
+# HEADER FIX: Confirmed title swap
+st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
-    # TITLE FIX: Updated title header to exact user preference
-    st.subheader("Urban and Small Towns Flash Flood Alert Map")
-    
-    # Render the Deck inside the fragment. Moving checkboxes now takes milliseconds!
-    st.pydeck_chart(render_map(
-        cwa_geojson, urban_shapes_geojson, 
-        toggle_radar, radar_opacity, 
-        live_warnings, toggle_warnings, 
-        live_lsrs, toggle_lsrs
-    ))
+st.pydeck_chart(render_map(
+    cwa_geojson, urban_shapes_geojson, 
+    toggle_radar, radar_opacity, 
+    live_warnings, toggle_warnings, 
+    live_lsrs, toggle_lsrs
+))
 
-# Execute the isolated visual module
-render_isolated_map_interface()
-
-# --- ALERTS & REPORT CORES ---
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No urban hydro hazards detected across operational domains.")
+    st.success("✅ No hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
