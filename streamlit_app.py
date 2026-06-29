@@ -113,7 +113,6 @@ def extract_file(fs, s3_path, idx_suffix=""):
         return None
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
-# NEW FIX: Memory caching tied to the 'count' cycle. Checkboxes no longer trigger fresh downloads!
 @st.cache_data(show_spinner=False)
 def scan_data(cycle_count):
     fs = s3fs.S3FileSystem(anon=True)
@@ -180,9 +179,10 @@ def scan_data(cycle_count):
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
+    # SPATIAL ALIGNMENT FIX: 2000x1200 guarantees a precise 1.666 aspect ratio match to the WGS84 bounding box.
     radar_layer = pdk.Layer(
         "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:4326&bbox=-110,40,-90,52&width=1200&height=800&format=image/png&transparent=true",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:4326&bbox=-110,40,-90,52&width=2000&height=1200&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
         opacity=0.55,
         visible=show_radar
@@ -210,10 +210,8 @@ def render_map(cwa_layer, city_shapes, show_radar):
 
 # --- EXECUTE SCANNER & MAP LOGIC ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    # Scanner utilizes cache based on the auto-timer cycle count
     alert_results = scan_data(count)
     
-# Process the baseline colors
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]
     feature["properties"]["line_color"] = [120, 120, 120, 100]
@@ -226,11 +224,9 @@ if alert_results:
             feature["properties"]["fill_color"] = [255, 0, 0, 180]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]  
 
-# NEW FIX: The map renders exactly ONE time here. The camera stays perfectly locked!
 st.subheader("Regional CWA Flash Flood Alert Map")
 st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
 
-# Process text output underneath the locked map
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
