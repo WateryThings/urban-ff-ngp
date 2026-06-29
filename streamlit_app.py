@@ -10,6 +10,7 @@ import json
 import urllib.request
 import pydeck as pdk
 import time
+import copy
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
@@ -59,7 +60,8 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        ⚠️ CAUTION: This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!
+       💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
+    </div>!
     </div>
 """)
 
@@ -90,7 +92,7 @@ col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds:
+    #### Monitored Products & Thresholds (2/4 must be met):
     * MRMS 1-hr QPE: $\ge$ 1.0"
     * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
     * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
@@ -102,7 +104,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 1 mile of the polygon edges.
-    * **Alert Expiration (30-Min Cooldown):** <sub>Alerts update live. However, to account for urban runoff and drainage lag, polygons remain highlighted red for 30 minutes after meteorological thresholds drop below the 2/4 consensus.</sub>
+    * **Alert Timing:** <sub>Alerts update live. To account for urban runoff and drainage lag, alerts will remain active even 30 minutes after 2/4 products drop below the required thresholds.</sub>
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
 
@@ -142,7 +144,9 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
     Loads detailed large city boundaries from JSON, then injects 
     custom rectangular boundaries for all missing small towns from the CSV.
     """
-    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in existing_geojson.get("features", [])]
+    # FIX 2: Deep copy to completely prevent RAM memory cache leaks
+    combined_geojson = copy.deepcopy(existing_geojson)
+    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in combined_geojson.get("features", [])]
     
     for _, row in csv_df.iterrows():
         town_name = f"{row['name']}, {row['state']}".strip().upper()
@@ -181,14 +185,14 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
                     ]]
                 }
             }
-            existing_geojson["features"].append(feature)
+            combined_geojson["features"].append(feature)
             
-    for feature in existing_geojson["features"]:
+    for feature in combined_geojson["features"]:
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
         feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
         
-    return existing_geojson
+    return combined_geojson
 
 # Load databases
 urban_gdf = get_urban_centers()
@@ -267,30 +271,32 @@ def get_lsrs():
 # --- CACHED FILE LIST LAYER ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_latest_files(product_name, num_files=1):
+    # FIX 1: Seamlessly bridge yesterday and today's files to prevent the UTC Midnight Bug
     fs = s3fs.S3FileSystem(anon=True)
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y%m%d")
     yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
     
-    path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
-    try:
-        files = fs.ls(path_today)
-        grib_files = [f for f in files if f.endswith('.grib2.gz')]
-        if grib_files:
-            return sorted(grib_files)[-num_files:]
-    except Exception:
-        pass
-        
+    all_files = []
+    
     path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
     try:
         files = fs.ls(path_yesterday)
-        grib_files = [f for f in files if f.endswith('.grib2.gz')]
-        if grib_files:
-            return sorted(grib_files)[-num_files:]
+        all_files.extend([f for f in files if f.endswith('.grib2.gz')])
     except Exception:
         pass
         
+    path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
+    try:
+        files = fs.ls(path_today)
+        all_files.extend([f for f in files if f.endswith('.grib2.gz')])
+    except Exception:
+        pass
+        
+    if all_files:
+        return sorted(all_files)[-num_files:]
     return []
+
 
 def extract_file(s3_path, idx_suffix=""):
     fs = s3fs.S3FileSystem(anon=True)
@@ -337,7 +343,6 @@ def scan_data(cycle_count, towns_df):
             continue
             
         s3_path = latest_files[0]
-        # Parse the timestamp dynamically from the NOAA S3 file name string
         try:
             t_str = s3_path.split('_')[-1].split('.')[0]
             dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S")
@@ -363,7 +368,6 @@ def scan_data(cycle_count, towns_df):
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 
-                # EXTRACT TRUE EDGES
                 c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
                 c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                 c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
@@ -371,15 +375,15 @@ def scan_data(cycle_count, towns_df):
                 # APPLY 1-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
                 b_min_lat = c_min_lat - BUFFER_DEG_LAT
                 b_max_lat = c_max_lat + BUFFER_DEG_LAT
-                
                 b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
                 b_max_lon_raw = max(c_min_lon, c_max_lon) + BUFFER_DEG_LON
                 
-                # Slicing Math Integration
                 lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
                 lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
                 
-                val = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name].max().values
+                # FIX 3: Empty slice safety validation to prevent fatal .max() crashes
+                slice_data = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name]
+                val = slice_data.max().values if slice_data.size > 0 else np.nan
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
@@ -407,7 +411,6 @@ def scan_data(cycle_count, towns_df):
     # --- SCAN SUSTAINED INSTANTANEOUS RAIN RATE BLOCK (3 SCANS) ---
     rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
-        # Extract Time Range for the 3 scans
         time_window = []
         for f in rate_history_files:
             try:
@@ -436,12 +439,10 @@ def scan_data(cycle_count, towns_df):
                 for _, row in towns_df.iterrows():
                     key = f"{row['name']}, {row['state']}"
                     
-                    # EXTRACT TRUE EDGES
                     c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
                     c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                     c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                     
-                    # APPLY 1-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
                     b_min_lat = c_min_lat - BUFFER_DEG_LAT
                     b_max_lat = c_max_lat + BUFFER_DEG_LAT
                     b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
@@ -450,9 +451,14 @@ def scan_data(cycle_count, towns_df):
                     lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
                     lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
                     
-                    v1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]].max().values
-                    v2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]].max().values
-                    v3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]].max().values
+                    # Apply Empty Slice Safety check sequentially
+                    slice1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]]
+                    slice2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]]
+                    slice3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]]
+                    
+                    v1 = slice1.max().values if slice1.size > 0 else np.nan
+                    v2 = slice2.max().values if slice2.size > 0 else np.nan
+                    v3 = slice3.max().values if slice3.size > 0 else np.nan
                     
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
@@ -556,7 +562,8 @@ for town_key, data in active_alert_results.items():
 
 # 2. Check history for towns resting in the cooldown window
 keys_to_remove = []
-for town_key, hist in st.session_state['alert_history'].items():
+# Ensure stable iteration over dictionary items
+for town_key, hist in list(st.session_state['alert_history'].items()):
     if town_key not in active_alert_results:
         time_since_trigger = current_utc_time - hist["time"]
         if time_since_trigger <= timedelta(minutes=30):
@@ -622,7 +629,7 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No hydro hazards detected across operational domains.")
+    st.success("✅ No urban hydro hazards detected - at ease soldier.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
