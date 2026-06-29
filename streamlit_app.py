@@ -60,7 +60,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss 450 million years ago). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
+        💣 CAUTION: This tool is an experimental prototype (similar to the first moss 450 million years ago). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
     </div>
 """)
 
