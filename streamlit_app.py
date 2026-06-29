@@ -25,21 +25,26 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
+# FIX: Increased padding-top to 5.5rem to force the layout completely below Streamlit's hidden navbar overlay
 st.html("""
     <style>
+        /* Force the core block container down past Streamlit's fixed header bar */
         .block-container {
             padding-top: 5.5rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
+        /* Tighten margins on elements to pull content upward */
         h1, h2, h3, h4 {
             margin-top: 0.2rem !important;
             margin-bottom: 0.2rem !important;
             padding-top: 0px !important;
         }
+        /* Compress generic element spacing blocks */
         .stElementContainer {
             margin-bottom: 0.4rem !important;
         }
+        /* Custom Un-clipped Yellow Caution Banner */
         .custom-caution-banner {
             background-color: #FFE600 !important;
             color: #000000 !important;
@@ -96,7 +101,7 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns (built dynamically from CSV bounding boxes).
+    * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns.
     * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
@@ -121,37 +126,6 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
-# --- GIS OPTIMIZATION: GENERATE FOOTPRINTS DIRECTLY FROM CSV BOUNDING BOXES ---
-@st.cache_data
-def generate_urban_shapes_from_csv(_df):
-    features = []
-    for _, row in _df.iterrows():
-        # Ensure longitudes match standard map orientation strings
-        min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-        max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
-        
-        feature = {
-            "type": "Feature",
-            "properties": {
-                "name": f"{row['name']}, {row['state']}",
-                "fill_color": [210, 210, 210, 90],
-                "line_color": [160, 160, 160, 120],
-                "hover_info": "Monitoring 4-Product Hazard Consensus"
-            },
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[
-                    [min_lon, row['min_lat']],
-                    [max_lon, row['min_lat']],
-                    [max_lon, row['max_lat']],
-                    [min_lon, row['max_lat']],
-                    [min_lon, row['min_lat']]
-                ]]
-            }
-        }
-        features.append(feature)
-    return {"type": "FeatureCollection", "features": features}
-
 @st.cache_data
 def load_json_layer(filepath):
     with open(filepath, "r") as f:
@@ -159,9 +133,7 @@ def load_json_layer(filepath):
 
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
-
-# Generate the spatial layout polygons directly from the parsed CSV frame rows
-urban_shapes_geojson = generate_urban_shapes_from_csv(urban_gdf)
+urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
 # --- NWS WARNINGS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -436,7 +408,6 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# Reset standard styling criteria across the newly generated dynamic geometry layers
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [210, 210, 210, 90]     
     feature["properties"]["line_color"] = [160, 160, 160, 120]     
