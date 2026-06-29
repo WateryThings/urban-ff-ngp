@@ -25,12 +25,12 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# FIX: Added a 2.5rem top padding buffer to prevent Streamlit's fixed header bar from clipping the banner
+# FIX: Increased padding-top to 5.5rem to force the layout completely below Streamlit's hidden navbar overlay
 st.html("""
     <style>
-        /* Safely clear standard header decoration anchors */
+        /* Force the core block container down past Streamlit's fixed header bar */
         .block-container {
-            padding-top: 2.5rem !important;
+            padding-top: 5.5rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
