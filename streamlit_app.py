@@ -103,6 +103,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere within a 0.5 mile buffer of the city boundaries.
+    * **Color-Coded CWA Boundaries:** NWS County Warning Areas (CWAs) for FGF, BIS, FSD, ABR, and UND are distinctly color-coded and faintly shaded to separate offices.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -197,6 +198,37 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 raw_urban_boundaries = load_json_layer("urban_boundaries.json")
+
+# Process CWA GeoJSON for distinct WFO styling
+cwa_styles = {
+    "FGF": {"line": [30, 144, 255, 255], "fill": [30, 144, 255, 15]},    # Dodger Blue
+    "BIS": {"line": [255, 140, 0, 255], "fill": [255, 140, 0, 15]},      # Dark Orange
+    "FSD": {"line": [50, 205, 50, 255], "fill": [50, 205, 50, 15]},      # Lime Green
+    "ABR": {"line": [220, 20, 60, 255], "fill": [220, 20, 60, 15]},      # Crimson
+    "UND": {"line": [148, 0, 211, 255], "fill": [148, 0, 211, 15]},      # Dark Violet
+    "UNR": {"line": [148, 0, 211, 255], "fill": [148, 0, 211, 15]}       # Dark Violet (Rapid City Fallback)
+}
+
+for feat in cwa_geojson.get("features", []):
+    props = feat.get("properties", {})
+    # Check common JSON properties for the WFO ID
+    search_str = str(props.get("CWA", props.get("WFO", props.get("id", props.get("name", ""))))).upper()
+    
+    line_col = [25, 25, 112, 255] # Default Midnight Blue
+    fill_col = [0, 0, 0, 0]
+    hover_name = f"NWS WFO: {search_str}" if search_str else "NWS CWA Boundary"
+    
+    for key, style in cwa_styles.items():
+        if key in search_str:
+            line_col = style["line"]
+            fill_col = style["fill"]
+            hover_name = f"NWS WFO: {key}"
+            break
+            
+    feat["properties"]["line_color"] = line_col
+    feat["properties"]["fill_color"] = fill_col
+    feat["properties"]["name"] = hover_name
+    feat["properties"]["hover_info"] = "CWA Boundary Zone"
 
 # Generate the hybrid polygon map featuring all 1,146 locations
 urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
@@ -501,8 +533,11 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     layers.append(radar_layer)
 
     outline_layer = pdk.Layer(
-        "GeoJsonLayer", cwa_layer, stroke_width=3,
-        get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2
+        "GeoJsonLayer", cwa_layer, stroke_width=4,
+        get_line_color="properties.line_color", 
+        get_fill_color="properties.fill_color", 
+        line_width_min_pixels=3,
+        pickable=True
     )
     layers.append(outline_layer)
     
