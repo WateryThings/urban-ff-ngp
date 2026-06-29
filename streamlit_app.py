@@ -51,7 +51,7 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * **Solid Slate Polygons:** Spatial extent of monitored urban areas and small towns.
+    * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
@@ -81,7 +81,6 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
-# FIX: Removed st.cache_data here so the app is forced to check the actual file for updates
 def load_json_layer(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -260,7 +259,6 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
     )
     layers.append(nws_warnings_layer)
 
-    # FIX: Added update_triggers so Pydeck forces a graphics refresh when switching files
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -293,9 +291,10 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
+# SHADING FIX: Switched to a beautiful, light, translucent mist gray
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [80, 80, 80, 160]     
-    feature["properties"]["line_color"] = [30, 30, 30, 255]     
+    feature["properties"]["fill_color"] = [210, 210, 210, 90]     # Light Translucent Mist Gray
+    feature["properties"]["line_color"] = [160, 160, 160, 120]     # Subtle Soft Border
     feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
