@@ -563,9 +563,9 @@ st.markdown("##### 🌱 Live Data Feed Health")
 health_cols = st.columns(4)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
-    "PrecipRate_00.00": "MRMS Rain Rates",
-    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
-    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
+    "PrecipRate_00.00": "MRMS Instantaneous Rain Rates",
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
+    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Unit Streamflow"
 }
 for i, (prod, name) in enumerate(friendly_names.items()):
     status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
