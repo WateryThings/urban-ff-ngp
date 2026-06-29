@@ -59,6 +59,17 @@ with col2:
 with col3:
     st.markdown("#### Map Layers:")
     toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
+    
+    # OPACITY SLIDER FIX: Added a slider that dynamically sets the transparency value from 0.0 to 1.0
+    radar_opacity = st.slider(
+        "Radar Opacity", 
+        min_value=0.0, 
+        max_value=1.0, 
+        value=0.55, 
+        step=0.05,
+        help="Adjust the transparency of the Base Reflectivity overlay layer."
+    )
+    
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
@@ -233,24 +244,27 @@ def scan_data(cycle_count):
     return results
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     
+    # 1. Base Radar Layer (Now uses the interactive opacity value from the slider)
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
-        opacity=0.55,
+        opacity=radar_opacity_val,
         visible=show_radar
     )
     layers.append(radar_layer)
 
+    # 2. CWA Operational Footprints
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
     layers.append(outline_layer)
     
+    # 3. NWS Active Warnings
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -259,6 +273,7 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
     )
     layers.append(nws_warnings_layer)
 
+    # 4. Urban Consensus Alert Footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -267,6 +282,7 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
     )
     layers.append(urban_polygon_layer)
     
+    # 5. LSRs
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -291,10 +307,9 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# SHADING FIX: Switched to a beautiful, light, translucent mist gray
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [210, 210, 210, 90]     # Light Translucent Mist Gray
-    feature["properties"]["line_color"] = [160, 160, 160, 120]     # Subtle Soft Border
+    feature["properties"]["fill_color"] = [210, 210, 210, 90]     
+    feature["properties"]["line_color"] = [160, 160, 160, 120]     
     feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
@@ -307,7 +322,7 @@ if alert_results:
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Regional CWA Flash Flood Alert Map")
-st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, live_warnings, toggle_warnings, live_lsrs, toggle_lsrs))
+st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, radar_opacity, live_warnings, toggle_warnings, live_lsrs, toggle_lsrs))
 
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
