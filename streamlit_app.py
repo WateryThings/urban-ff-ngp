@@ -23,10 +23,6 @@ PRODUCTS = {
 RAIN_RATE_PROD = "PrecipRate_00.00"
 RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
-# Buffer Constants (0.5 Miles converted to Decimal Degrees)
-BUFFER_DEG_LAT = 0.0072 
-BUFFER_DEG_LON = 0.0102 
-
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
@@ -84,7 +80,7 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 3 out of the 4** product thresholds are met within a 0.5-mile buffer of the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 3 out of the 4** product thresholds are met strictly within the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -102,7 +98,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere within a 0.5 mile buffer of the city boundaries.
+    * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
     * **Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
@@ -372,14 +368,12 @@ def scan_data(cycle_count, towns_df):
                 c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                 c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                 
-                # APPLY 1-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
-                b_min_lat = c_min_lat - BUFFER_DEG_LAT
-                b_max_lat = c_max_lat + BUFFER_DEG_LAT
-                b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
-                b_max_lon_raw = max(c_min_lon, c_max_lon) + BUFFER_DEG_LON
+                # STRICT CITY POLYGON EDGES (NO BUFFER)
+                true_min_lon = min(c_min_lon, c_max_lon)
+                true_max_lon = max(c_min_lon, c_max_lon)
                 
-                lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
-                lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
+                lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
+                lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
                 
                 # FIX 3: Empty slice safety validation to prevent fatal .max() crashes
                 slice_data = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name]
@@ -443,13 +437,12 @@ def scan_data(cycle_count, towns_df):
                     c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                     c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                     
-                    b_min_lat = c_min_lat - BUFFER_DEG_LAT
-                    b_max_lat = c_max_lat + BUFFER_DEG_LAT
-                    b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
-                    b_max_lon_raw = max(c_min_lon, c_max_lon) + BUFFER_DEG_LON
+                    # STRICT CITY POLYGON EDGES (NO BUFFER)
+                    true_min_lon = min(c_min_lon, c_max_lon)
+                    true_max_lon = max(c_min_lon, c_max_lon)
                     
-                    lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
-                    lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
+                    lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
+                    lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
                     
                     # Apply Empty Slice Safety check sequentially
                     slice1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]]
@@ -583,13 +576,21 @@ st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
 st.session_state['feed_health'] = feed_health
 
 # Map the active alerts to the GeoJSON polygon layer 
+upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
+
 for feature in urban_shapes_geojson["features"]:
-    feat_name = str(feature["properties"].get("name", "")).upper()
+    feat_name = str(feature["properties"].get("name", "")).strip().upper()
     
-    if alert_results and any(town.split(",")[0].strip().upper() in feat_name for town in alert_results.keys()):
+    # EXACT name match to prevent substring overlap bugs (e.g. "Ray, ND" triggering "Raymond, ND")
+    if feat_name in upper_alert_results:
         feature["properties"]["fill_color"] = [255, 0, 0, 200]  
         feature["properties"]["line_color"] = [150, 0, 0, 255]
-        feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
+        
+        # Dynamically change the hover tooltip based on whether it is an active threat or just draining
+        if "Cooldown" in upper_alert_results[feat_name].get("Consensus Score", ""):
+            feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 30-Min Drainage Cooldown Active"
+        else:
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
     else:
         # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
