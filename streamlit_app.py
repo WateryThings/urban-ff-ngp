@@ -25,44 +25,26 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# FIX: Increased padding-top to 5.5rem to force the layout completely below Streamlit's hidden navbar overlay
 st.html("""
     <style>
-        /* Force the core block container down past Streamlit's fixed header bar */
         .block-container {
-            padding-top: 5.5rem !important;
+            padding-top: 1rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
-        /* Tighten margins on elements to pull content upward */
         h1, h2, h3, h4 {
             margin-top: 0.2rem !important;
             margin-bottom: 0.2rem !important;
             padding-top: 0px !important;
         }
-        /* Compress generic element spacing blocks */
         .stElementContainer {
             margin-bottom: 0.4rem !important;
         }
-        /* Custom Un-clipped Yellow Caution Banner */
-        .custom-caution-banner {
-            background-color: #FFE600 !important;
-            color: #000000 !important;
-            padding: 12px 20px !important;
-            border-radius: 6px !important;
-            font-weight: bold !important;
-            font-size: 14px !important;
-            margin-bottom: 1rem !important;
-            border: 1px solid #E6D000 !important;
-            box-shadow: 0px 2px 4px rgba(0,0,0,0.05) !important;
-            display: block !important;
-        }
     </style>
-    
-    <div class="custom-caution-banner">
-        ⚠️ CAUTION: This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!
-    </div>
 """)
+
+# --- CAUTION WARNING BANNER ---
+st.warning("⚠️ **CAUTION:** This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!")
 
 # --- AUTOMATED OPERATIONS TIMER ---
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
@@ -82,7 +64,7 @@ with time_col:
 
 st.markdown("---")
 
-# --- BLUF & OPERATIONAL USER GUIDE ---
+# --- BLUF & OPERATIONAL USER GUIDE (UPDATED TO 2/4) ---
 st.markdown("""
 **BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer.
 """)
@@ -252,6 +234,7 @@ def scan_data(cycle_count):
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
+    # Setup shared geographic boundaries
     master_lat_box = [41.5, 50.0]
     master_lon_slice = slice(360 - 107.0, 360 - 93.5)
     
@@ -287,17 +270,7 @@ def scan_data(cycle_count):
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
-                    
-                    if product == "RadarOnly_QPE_01H_00.00":
-                        val_inches = val / 25.4
-                        town_tallies[key]["details"].append(f"1-hr QPE: {val_inches:.2f} in (Thresh: 1.00 in)")
-                    elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
-                        val_cfs = val * 91.464
-                        town_tallies[key]["details"].append(f"CREST Unit Flow: {val_cfs:.0f} cfs/sq mi (Thresh: 200 cfs/sq mi)")
-                    elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
-                        val_cfs = val * 91.464
-                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {val_cfs:.0f} cfs/sq mi (Thresh: 1000 cfs/sq mi)")
-                        
+                    town_tallies[key]["details"].append(f"{product}: {val:.2f} (Thresh: {threshold})")
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
             logs.append(f"✅ Successfully scanned: {product}")
@@ -332,9 +305,7 @@ def scan_data(cycle_count):
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
-                            
-                            min_peak_in_hr = min(v1, v2, v3) / 25.4
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {min_peak_in_hr:.2f} in/hr (Thresh: 2.00 in/hr over 3 scans)")
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate History broken: Min Peak {min(v1,v2,v3):.2f}")
                             
                 for d in datasets: d.close()
                 for g in local_gribs:
@@ -345,6 +316,7 @@ def scan_data(cycle_count):
             
     st.session_state['pipeline_diagnostic_logs'] = logs
 
+    # FIXED OPERATIONAL CORE CRITERIA: Alerts now execute at 2 or more active products
     for town_key, data in town_tallies.items():
         if data["score"] >= 2:
             results[town_key] = {
@@ -420,6 +392,7 @@ if alert_results:
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
+            # FIXED MAP INTERFACE LABEL: Reflected the true 2+ operational trigger threshold
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
