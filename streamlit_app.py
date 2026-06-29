@@ -59,7 +59,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        ⚠️ CAUTION: This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!
+        ⚠️ CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
     </div>
 """)
 
