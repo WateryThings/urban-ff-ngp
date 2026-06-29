@@ -179,13 +179,15 @@ def get_lsrs():
     except Exception:
         return {"type": "FeatureCollection", "features": []}
 
-# --- FIXED DATA EXTRACTION LAYER (TUNNELING INTO THE YYYYMMDD DIRECTORIES) ---
-def get_latest_files(fs, product_name, num_files=1):
+# --- SPEED OPTIMIZATION: CACHING THE FILE LIST IN MEMORY ---
+@st.cache_data(ttl=60, show_spinner=False)
+def get_latest_files(product_name, num_files=1):
+    fs = s3fs.S3FileSystem(anon=True)
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y%m%d")
     yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
     
-    # Check today's directory folder first
+    # Check today's folder
     path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
     try:
         files = fs.ls(path_today)
@@ -195,7 +197,7 @@ def get_latest_files(fs, product_name, num_files=1):
     except Exception:
         pass
         
-    # Fallback backup: Look inside yesterday's folder if today's is fresh or empty
+    # Check yesterday's folder
     path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
     try:
         files = fs.ls(path_yesterday)
@@ -207,7 +209,8 @@ def get_latest_files(fs, product_name, num_files=1):
         
     return []
 
-def extract_file(fs, s3_path, idx_suffix=""):
+def extract_file(s3_path, idx_suffix=""):
+    fs = s3fs.S3FileSystem(anon=True)
     local_gz = f"temp_{idx_suffix}.grib2.gz"
     local_grib = f"temp_{idx_suffix}.grib2"
     try:
@@ -224,19 +227,18 @@ def extract_file(fs, s3_path, idx_suffix=""):
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
 def scan_data(cycle_count):
-    fs = s3fs.S3FileSystem(anon=True)
     results = {}
     logs = [] 
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
     for product, threshold in PRODUCTS.items():
-        latest_files = get_latest_files(fs, product, num_files=1)
+        latest_files = get_latest_files(product, num_files=1)
         if not latest_files: 
             logs.append(f"❌ Could not find recent files for {product} on NOAA S3.")
             continue
             
-        local_grib = extract_file(fs, latest_files[0], product)
+        local_grib = extract_file(latest_files[0], product)
         if not local_grib: 
             logs.append(f"❌ Failed to extract grib file for {product}.")
             continue
