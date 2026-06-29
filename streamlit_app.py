@@ -22,9 +22,9 @@ PRODUCTS = {
 RAIN_RATE_PROD = "PrecipRate_00.00"
 RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
-# Buffer Constants (5 Miles converted to Decimal Degrees)
-BUFFER_DEG_LAT = 0.072 
-BUFFER_DEG_LON = 0.102 
+# Buffer Constants (1 Mile converted to Decimal Degrees)
+BUFFER_DEG_LAT = 0.0144 
+BUFFER_DEG_LON = 0.0204 
 
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
@@ -83,7 +83,7 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer of the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 1-mile buffer of the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -101,7 +101,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 5 miles of the polygon edges.
+    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 1 mile of the polygon edges.
     * **Alert Expiration:** Alerts update live. The red polygon drops off automatically the exact moment the latest NOAA MRMS scans drop below the 2/4 consensus threshold.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
@@ -368,7 +368,7 @@ def scan_data(cycle_count, towns_df):
                 c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                 c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                 
-                # APPLY 5-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
+                # APPLY 1-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
                 b_min_lat = c_min_lat - BUFFER_DEG_LAT
                 b_max_lat = c_max_lat + BUFFER_DEG_LAT
                 
@@ -441,7 +441,7 @@ def scan_data(cycle_count, towns_df):
                     c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                     c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                     
-                    # APPLY 5-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
+                    # APPLY 1-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
                     b_min_lat = c_min_lat - BUFFER_DEG_LAT
                     b_max_lat = c_max_lat + BUFFER_DEG_LAT
                     b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
