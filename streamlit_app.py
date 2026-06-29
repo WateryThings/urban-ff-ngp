@@ -61,7 +61,7 @@ st.html("""
     
     <div class="custom-caution-banner">
        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
-    </div>!
+    </div>
     </div>
 """)
 
