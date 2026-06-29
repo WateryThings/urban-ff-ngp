@@ -60,6 +60,7 @@ with col3:
     st.markdown("#### Map Layers:")
     toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
+    toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
@@ -102,13 +103,11 @@ def get_nws_warnings():
             for feature in data.get("features", []):
                 event = feature["properties"].get("event", "")
                 
-                # Check for our specific hydrological hazards
                 if event in ["Flash Flood Warning", "Flood Advisory"]:
                     
                     headline = feature["properties"].get("headline", "Active Warning")
                     raw_area = feature["properties"].get("areaDesc", "Unknown Area")
                     
-                    # FORMATTING FIX: Injecting the word "County" into the NWS text for clarity
                     formatted_areas = []
                     for a in raw_area.split(";"):
                         a = a.strip()
@@ -121,10 +120,8 @@ def get_nws_warnings():
                         else:
                             formatted_areas.append(a)
                     
-                    # Join them nicely with a comma instead of the NWS semicolon
                     clean_area = ", ".join(formatted_areas)
                     
-                    # Inject standardized properties so Pydeck knows what to display on hover
                     feature["properties"]["name"] = f"⚠️ {event}"
                     feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected Counties:</b> {clean_area}"
                     
@@ -135,6 +132,41 @@ def get_nws_warnings():
                         feature["properties"]["fill_color"] = [144, 238, 144, 50]   
                         feature["properties"]["line_color"] = [50, 205, 50, 255]    
                         
+                    filtered_features.append(feature)
+                    
+            return {"type": "FeatureCollection", "features": filtered_features}
+    except Exception:
+        return {"type": "FeatureCollection", "features": []}
+
+# --- LOCAL STORM REPORTS ENGINE (IEM API FETCH) ---
+@st.cache_data(ttl=120, show_spinner=False)
+def get_lsrs():
+    # Pulls all storm reports for the 5-state NGP region over the last 24 hours
+    url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
+    req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
+    filtered_features = []
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            for feature in data.get("features", []):
+                # The IEM API uses 'type' for the hazard class
+                event_type = str(feature["properties"].get("type", "")).upper()
+                
+                # Filter specifically for Flash Flood reports
+                if event_type == "FLASH FLOOD":
+                    remark = feature["properties"].get("remark", "No additional details provided.")
+                    city = feature["properties"].get("city", "Unknown")
+                    county = feature["properties"].get("county", "Unknown")
+                    
+                    # Tooltip Formatting
+                    feature["properties"]["name"] = "💧 Flash Flood LSR"
+                    feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
+                    
+                    # Bright Orange Fill with White Outline to stand out against radar and warnings
+                    feature["properties"]["fill_color"] = [255, 140, 0, 220]
+                    feature["properties"]["line_color"] = [255, 255, 255, 255]
+                    
                     filtered_features.append(feature)
                     
             return {"type": "FeatureCollection", "features": filtered_features}
@@ -230,7 +262,7 @@ def scan_data(cycle_count):
     return results
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings):
+def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     
     radar_layer = pdk.Layer(
@@ -263,6 +295,17 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings)
     )
     layers.append(urban_polygon_layer)
     
+    lsr_layer = pdk.Layer(
+        "GeoJsonLayer", lsr_data,
+        get_line_color="properties.line_color", 
+        get_fill_color="properties.fill_color",
+        get_point_radius=3500,               # Creates a 3.5km circle radius on the map
+        point_radius_min_pixels=6,           # Ensures it never shrinks out of sight when zooming out
+        pickable=True, extruded=False,
+        visible=show_lsrs
+    )
+    layers.append(lsr_layer)
+    
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
@@ -277,6 +320,7 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings)
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
     live_warnings = get_nws_warnings()
+    live_lsrs = get_lsrs()
 
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [130, 130, 130, 90]     
@@ -293,7 +337,7 @@ if alert_results:
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Regional CWA Flash Flood Alert Map")
-st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, live_warnings, toggle_warnings))
+st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, live_warnings, toggle_warnings, live_lsrs, toggle_lsrs))
 
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
