@@ -7,6 +7,7 @@ import gzip
 import shutil
 import os
 import json
+import urllib.request
 import pydeck as pdk
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
@@ -57,7 +58,8 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD composite reflectivity over the map area.")
+    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
+    toggle_warnings = st.checkbox("Overlay Flood Warnings", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green) for the NGP region.")
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
@@ -86,6 +88,37 @@ def load_json_layer(filepath):
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
+
+# --- NWS WARNINGS ENGINE (API DATA FETCH) ---
+@st.cache_data(ttl=120, show_spinner=False)
+def get_nws_warnings():
+    # Targets the 5 operational states in the NGP domain
+    url = "https://api.weather.gov/alerts/active?area=ND,SD,MN,MT,WY"
+    req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
+    filtered_features = []
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            for feature in data.get("features", []):
+                event = feature["properties"].get("event", "")
+                
+                # Filter and strictly color code Flash Flood Warnings (Dark Green)
+                if event == "Flash Flood Warning":
+                    feature["properties"]["fill_color"] = [0, 128, 0, 40]       
+                    feature["properties"]["line_color"] = [0, 100, 0, 255]      
+                    filtered_features.append(feature)
+                    
+                # Filter and strictly color code Flood Advisories (Light Green)
+                elif event == "Flood Advisory":
+                    feature["properties"]["fill_color"] = [144, 238, 144, 50]   
+                    feature["properties"]["line_color"] = [50, 205, 50, 255]    
+                    filtered_features.append(feature)
+                    
+            return {"type": "FeatureCollection", "features": filtered_features}
+    except Exception:
+        # Fails securely to an empty layer if the NWS API times out
+        return {"type": "FeatureCollection", "features": []}
 
 # --- DATA EXTRACTION & DOWNLOADING ---
 def get_latest_files(fs, product_name, num_files=1):
@@ -176,10 +209,9 @@ def scan_data(cycle_count):
     return results
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar):
+def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings):
     layers = []
     
-    # SPATIAL ALIGNMENT FIX: Pre-warped Web Mercator (EPSG:3857) image request to perfectly align with the Deck.gl basemap.
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -195,6 +227,14 @@ def render_map(cwa_layer, city_shapes, show_radar):
     )
     layers.append(outline_layer)
     
+    nws_warnings_layer = pdk.Layer(
+        "GeoJsonLayer", warnings_data,
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        stroke_width=3, line_width_min_pixels=2, pickable=True, extruded=False,
+        visible=show_warnings
+    )
+    layers.append(nws_warnings_layer)
+
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -211,6 +251,7 @@ def render_map(cwa_layer, city_shapes, show_radar):
 # --- EXECUTE SCANNER & MAP LOGIC ---
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
+    live_warnings = get_nws_warnings()
     
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]
@@ -225,7 +266,7 @@ if alert_results:
             feature["properties"]["line_color"] = [150, 0, 0, 255]  
 
 st.subheader("Regional CWA Flash Flood Alert Map")
-st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
+st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, live_warnings, toggle_warnings))
 
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
