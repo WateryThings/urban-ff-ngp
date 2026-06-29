@@ -52,27 +52,23 @@ st.warning("⚠️ **CAUTION:** This tool is an experimental prototype (similar 
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
 
 # --- HEADER & TIMESTAMP GRID ---
-# Splitting the top row to push the live data status box into the upper right corner
 header_col, time_col = st.columns([3, 1])
 
 with header_col:
     st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
 
 with time_col:
-    # Build out timestamps
     utc_now = datetime.now(timezone.utc)
     cdt_now = utc_now - timedelta(hours=5)
     local_time_str = cdt_now.strftime("%I:%M %p cdt").lower()
     utc_time_str = utc_now.strftime("%H:%M UTC")
-    
-    # Render the alert info container natively aligned to the top right
     st.info(f"⏳ **Last Scanner Update:** {local_time_str} ({utc_time_str}) | *Cycle: {count}*")
 
 st.markdown("---")
 
-# --- BLUF & OPERATIONAL USER GUIDE ---
+# --- BLUF & OPERATIONAL USER GUIDE (UPDATED FOR 2/4 CONSENSUS) ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when 3 out of the 4 product thresholds are met within a 5-mile buffer.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when 2 out of the 4 product thresholds are met within a 5-mile buffer.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -90,7 +86,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns.
-    * **Solid Red Polygons:** 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
@@ -263,8 +259,10 @@ def scan_data(cycle_count):
             pass
         for g in local_gribs:
             if g and os.path.exists(g): os.remove(g)
+            
+    # CRITICAL CHANGE: Triggering alerts at 2 out of 4 matching parameters
     for town_key, data in town_tallies.items():
-        if data["score"] >= 3:
+        if data["score"] >= 2:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
@@ -342,7 +340,8 @@ if alert_results:
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
-            feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
+            # CRITICAL CHANGE: Updated hover banner statement for the new trigger threshold
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
