@@ -589,7 +589,7 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No urban hydro hazards detected across the operational domain - LOOKING GOOD BOSS!!!!")
+    st.success("✅ No urban hydro hazards detected - at ease soldier.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
