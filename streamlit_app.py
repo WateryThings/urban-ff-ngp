@@ -92,7 +92,6 @@ urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 # --- NWS WARNINGS ENGINE (API DATA FETCH) ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_nws_warnings():
-    # Targets the 5 operational states in the NGP domain
     url = "https://api.weather.gov/alerts/active?area=ND,SD,MN,MT,WY"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
@@ -103,21 +102,28 @@ def get_nws_warnings():
             for feature in data.get("features", []):
                 event = feature["properties"].get("event", "")
                 
-                # Filter and strictly color code Flash Flood Warnings (Dark Green)
-                if event == "Flash Flood Warning":
-                    feature["properties"]["fill_color"] = [0, 128, 0, 40]       
-                    feature["properties"]["line_color"] = [0, 100, 0, 255]      
-                    filtered_features.append(feature)
+                # Check for our specific hydrological hazards
+                if event in ["Flash Flood Warning", "Flood Advisory"]:
                     
-                # Filter and strictly color code Flood Advisories (Light Green)
-                elif event == "Flood Advisory":
-                    feature["properties"]["fill_color"] = [144, 238, 144, 50]   
-                    feature["properties"]["line_color"] = [50, 205, 50, 255]    
+                    # Extract operational details for the tooltip
+                    headline = feature["properties"].get("headline", "Active Warning")
+                    area = feature["properties"].get("areaDesc", "Unknown Area")
+                    
+                    # Inject standardized properties so Pydeck knows what to display on hover
+                    feature["properties"]["name"] = f"⚠️ {event}"
+                    feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected:</b> {area}"
+                    
+                    if event == "Flash Flood Warning":
+                        feature["properties"]["fill_color"] = [0, 128, 0, 40]       
+                        feature["properties"]["line_color"] = [0, 100, 0, 255]      
+                    else: # Flood Advisory
+                        feature["properties"]["fill_color"] = [144, 238, 144, 50]   
+                        feature["properties"]["line_color"] = [50, 205, 50, 255]    
+                        
                     filtered_features.append(feature)
                     
             return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
-        # Fails securely to an empty layer if the NWS API times out
         return {"type": "FeatureCollection", "features": []}
 
 # --- DATA EXTRACTION & DOWNLOADING ---
@@ -242,20 +248,27 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings)
     )
     layers.append(urban_polygon_layer)
     
+    # NEW TOOLTIP LOGIC: Renders an HTML string merging the name and our custom injected hover details
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
-        map_style="light", tooltip={"text": "{name}"}
+        map_style="light", 
+        tooltip={
+            "html": "<b style='color: #4AA4DE;'>{name}</b><br/>{hover_info}", 
+            "style": {"backgroundColor": "#222222", "color": "white", "maxWidth": "300px"}
+        }
     )
 
 # --- EXECUTE SCANNER & MAP LOGIC ---
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
     live_warnings = get_nws_warnings()
-    
+
+# Prepare baseline shapes with default hover info
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [180, 180, 180, 50]
     feature["properties"]["line_color"] = [120, 120, 120, 100]
+    feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
     alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
@@ -263,7 +276,9 @@ if alert_results:
         feat_name = str(feature["properties"]["name"]).upper()
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 180]  
-            feature["properties"]["line_color"] = [150, 0, 0, 255]  
+            feature["properties"]["line_color"] = [150, 0, 0, 255]
+            # Override hover text to reflect danger state
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Regional CWA Flash Flood Alert Map")
 st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, live_warnings, toggle_warnings))
