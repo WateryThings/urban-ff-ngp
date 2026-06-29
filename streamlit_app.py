@@ -102,7 +102,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 1 mile of the polygon edges.
+    * **Solid Red Polygons:** 2 out of 4 MRMS products exceed the thresholds anywhere within a 1 mile buffer of the city boundaries.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
