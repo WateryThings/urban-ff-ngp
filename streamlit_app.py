@@ -179,7 +179,7 @@ def get_lsrs():
     except Exception:
         return {"type": "FeatureCollection", "features": []}
 
-# --- SPEED OPTIMIZATION: CACHING THE FILE LIST IN MEMORY ---
+# --- CACHED FILE LIST LAYER ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_latest_files(product_name, num_files=1):
     fs = s3fs.S3FileSystem(anon=True)
@@ -187,7 +187,6 @@ def get_latest_files(product_name, num_files=1):
     today_str = now_utc.strftime("%Y%m%d")
     yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
     
-    # Check today's folder
     path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
     try:
         files = fs.ls(path_today)
@@ -197,7 +196,6 @@ def get_latest_files(product_name, num_files=1):
     except Exception:
         pass
         
-    # Check yesterday's folder
     path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
     try:
         files = fs.ls(path_yesterday)
@@ -249,6 +247,13 @@ def scan_data(cycle_count):
             
             lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
             
+            # SPEED OPTIMIZATION BLOCK: Crop down to regional footprint box FIRST
+            # Box extends from 41.5°N to 50.0°N and -107.0°W to -93.5°W
+            master_lat_slice = slice(41.5, 50.0) if lat_ascending else slice(50.0, 41.5)
+            master_lon_slice = slice(360 - 107.0, 360 - 93.5)
+            
+            ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice)
+            
             for _, row in urban_gdf.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
@@ -256,7 +261,8 @@ def scan_data(cycle_count):
                 lats = [row['min_lat'], row['max_lat']]
                 lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
                 
-                val = ds.sel(latitude=lat_slice, longitude=slice(min_lon, max_lon))[var_name].max().values
+                # Slicing from our pre-shrunk cropped array instead of the massive nationwide layout!
+                val = ds_cropped.sel(latitude=lat_slice, longitude=slice(min_lon, max_lon))[var_name].max().values
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
