@@ -25,12 +25,12 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# FIX: Infused a bulletproof custom HTML yellow caution banner directly into the top of the container
+# FIX: Added a 2.5rem top padding buffer to prevent Streamlit's fixed header bar from clipping the banner
 st.html("""
     <style>
-        /* Eliminate master block container top padding */
+        /* Safely clear standard header decoration anchors */
         .block-container {
-            padding-top: 0.5rem !important;
+            padding-top: 2.5rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
@@ -44,7 +44,7 @@ st.html("""
         .stElementContainer {
             margin-bottom: 0.4rem !important;
         }
-        /* Custom Un-swallowable Yellow Caution Banner */
+        /* Custom Un-clipped Yellow Caution Banner */
         .custom-caution-banner {
             background-color: #FFE600 !important;
             color: #000000 !important;
@@ -314,136 +314,4 @@ def scan_data(cycle_count):
             
             if len(datasets) == 3:
                 lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
-                master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
-                
-                cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
-                var_names = [list(d.data_vars)[0] for d in cropped_ds]
-                
-                for _, row in urban_gdf.iterrows():
-                    key = f"{row['name']}, {row['state']}"
-                    min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
-                    lats = [row['min_lat'], row['max_lat']]
-                    lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
-                    
-                    v1 = cropped_ds[0].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[0]].max().values
-                    v2 = cropped_ds[1].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[1]].max().values
-                    v3 = cropped_ds[2].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[2]].max().values
-                    
-                    if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
-                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                            town_tallies[key]["score"] += 1
-                            
-                            min_peak_in_hr = min(v1, v2, v3) / 25.4
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {min_peak_in_hr:.2f} in/hr (Thresh: 2.00 in/hr over 3 scans)")
-                            
-                for d in datasets: d.close()
-                for g in local_gribs:
-                    if g and os.path.exists(g): os.remove(g)
-                logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
-        except Exception as e:
-            logs.append(f"❌ Rain Rate History processing error: {str(e)}")
-            
-    st.session_state['pipeline_diagnostic_logs'] = logs
-
-    # Filter out score matches configured for operational trigger threshold
-    for town_key, data in town_tallies.items():
-        if data["score"] >= 2:
-            results[town_key] = {
-                "Consensus Score": f"{data['score']} of 4 Metrics Broken",
-                "Trigger Details": data["details"]
-            }
-    return results
-
-# --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
-    layers = []
-    radar_layer = pdk.Layer(
-        "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
-        bounds=[-110.0, 40.0, -90.0, 52.0],
-        opacity=radar_opacity_val, visible=show_radar
-    )
-    layers.append(radar_layer)
-
-    outline_layer = pdk.Layer(
-        "GeoJsonLayer", cwa_layer, stroke_width=3,
-        get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2
-    )
-    layers.append(outline_layer)
-    
-    nws_warnings_layer = pdk.Layer(
-        "GeoJsonLayer", warnings_data,
-        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        stroke_width=3, line_width_min_pixels=2, pickable=True, visible=show_warnings
-    )
-    layers.append(nws_warnings_layer)
-
-    urban_polygon_layer = pdk.Layer(
-        "GeoJsonLayer", city_shapes,
-        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        pickable=True, extruded=False,
-        update_triggers={"get_fill_color": ["properties.fill_color"]}
-    )
-    layers.append(urban_polygon_layer)
-    
-    lsr_layer = pdk.Layer(
-        "GeoJsonLayer", lsr_data,
-        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        get_point_radius=3500, point_radius_min_pixels=6, pickable=True, visible=show_lsrs
-    )
-    layers.append(lsr_layer)
-    
-    return pdk.Deck(
-        layers=layers,
-        initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
-        map_style="light", 
-        tooltip={
-            "html": "<b style='color: #4AA4DE;'>{name}</b><br/>{hover_info}", 
-            "style": {"backgroundColor": "#222222", "color": "white", "maxWidth": "300px"}
-        }
-    )
-
-# --- EXECUTE CORE SCANS ---
-with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results = scan_data(count)
-    live_warnings = get_nws_warnings()
-    live_lsrs = get_lsrs()
-
-for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [210, 210, 210, 90]     
-    feature["properties"]["line_color"] = [160, 160, 160, 120]     
-    feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
-    
-if alert_results:
-    alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
-    for feature in urban_shapes_geojson["features"]:
-        feat_name = str(feature["properties"].get("name", "")).upper()
-        if any(town in feat_name for town in alerted_towns):
-            feature["properties"]["fill_color"] = [255, 0, 0, 200]  
-            feature["properties"]["line_color"] = [150, 0, 0, 255]
-            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
-
-st.subheader("Urban and Small Towns Flash Flood Alert Map")
-
-st.pydeck_chart(render_map(
-    cwa_geojson, urban_shapes_geojson, 
-    toggle_radar, radar_opacity, 
-    live_warnings, toggle_warnings, 
-    live_lsrs, toggle_lsrs
-))
-
-with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
-    if 'pipeline_diagnostic_logs' in st.session_state:
-        for log in st.session_state['pipeline_diagnostic_logs']:
-            st.write(log)
-    else:
-        st.write("Initializing connections to NOAA data feeds...")
-
-if alert_results:
-    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-    st.json(alert_results)
-else:
-    st.success("✅ No hydro hazards detected across operational domains.")
-
-if st.button("Refresh & Scan"):
-    st.rerun()
+                master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max
