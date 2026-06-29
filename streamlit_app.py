@@ -60,7 +60,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At its best, warning excellence is a moonshot. At its worst, it will update by 2067.
+        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
     </div>
 """)
 
@@ -91,7 +91,7 @@ col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds (2/4 must be met):
+    #### Monitored Products & Thresholds:
     * MRMS 1-hr QPE: $\ge$ 1.0"
     * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
     * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
@@ -103,9 +103,9 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 1 mile of the polygon edges.
-    * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active even 30 minutes after 2/4 products drop below the required thresholds.
+    * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
-    """)
+    """, unsafe_allow_html=True)
 
 with col3:
     st.markdown("#### Map Layers:")
