@@ -10,6 +10,7 @@ import json
 import urllib.request
 import pydeck as pdk
 import time
+import requests
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
@@ -25,10 +26,11 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
+# FIX: Increased padding-top to 5.5rem to force the layout completely below Streamlit's hidden navbar overlay
 st.html("""
     <style>
         .block-container {
-            padding-top: 1rem !important;
+            padding-top: 5.5rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
@@ -40,11 +42,24 @@ st.html("""
         .stElementContainer {
             margin-bottom: 0.4rem !important;
         }
+        .custom-caution-banner {
+            background-color: #FFE600 !important;
+            color: #000000 !important;
+            padding: 12px 20px !important;
+            border-radius: 6px !important;
+            font-weight: bold !important;
+            font-size: 14px !important;
+            margin-bottom: 1rem !important;
+            border: 1px solid #E6D000 !important;
+            box-shadow: 0px 2px 4px rgba(0,0,0,0.05) !important;
+            display: block !important;
+        }
     </style>
+    
+    <div class="custom-caution-banner">
+        ⚠️ CAUTION: This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!
+    </div>
 """)
-
-# --- CAUTION WARNING BANNER ---
-st.warning("⚠️ **CAUTION:** This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!")
 
 # --- AUTOMATED OPERATIONS TIMER ---
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
@@ -64,7 +79,7 @@ with time_col:
 
 st.markdown("---")
 
-# --- BLUF & OPERATIONAL USER GUIDE (UPDATED TO 2/4) ---
+# --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
 **BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer.
 """)
@@ -99,23 +114,84 @@ with col3:
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
-@st.cache_data
+# --- OSM OVERPASS API: DYNAMICALLY FETCH EVERY TOWN ---
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_urban_centers():
-    df = pd.read_csv("urban_centers.csv")
-    df['min_lon'] = pd.to_numeric(df['min_lon'], errors='coerce')
-    df['max_lon'] = pd.to_numeric(df['max_lon'], errors='coerce')
-    df['min_lat'] = pd.to_numeric(df['min_lat'], errors='coerce')
-    df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
-    return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
+    url = "https://overpass-api.de/api/interpreter"
+    # Overpass query targeting nodes designated as city, town, or village inside your exact regional bounding box
+    query = '[out:json];node["place"~"city|town|village"](41.5,-107.0,50.0,-93.5);out body;'
+    
+    try:
+        response = requests.get(url, params={"data": query}, timeout=15)
+        data = response.json()
+        
+        records = []
+        for el in data.get("elements", []):
+            lat = el["lat"]
+            lon = el["lon"]
+            name = el["tags"].get("name", "Unknown")
+            state = el["tags"].get("is_in:state", "NGP")
+            
+            # Mathematically extrapolate the 5-mile operational warning buffers around the coordinate centers
+            # 1 degree lat ≈ 69 miles -> 5 miles ≈ 0.072 deg
+            # 1 degree lon at 45N ≈ 49 miles -> 5 miles ≈ 0.102 deg
+            records.append({
+                "name": name,
+                "state": state,
+                "lat": lat,
+                "lon": lon,
+                "min_lat": lat - 0.072,
+                "max_lat": lat + 0.072,
+                "min_lon": lon - 0.102,
+                "max_lon": lon + 0.102
+            })
+        return pd.DataFrame(records).dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
+    except Exception as e:
+        st.sidebar.error(f"OSM Overpass API Connection Failure: {str(e)}")
+        return pd.DataFrame(columns=["name", "state", "lat", "lon", "min_lat", "max_lat", "min_lon", "max_lon"])
+
+# --- GIS OPTIMIZATION: GENERATE FOOTPRINTS DIRECTLY FROM DYNAMIC BOUNDING BOXES ---
+@st.cache_data
+def generate_urban_shapes(_df):
+    features = []
+    for _, row in _df.iterrows():
+        # Ensure longitudes match standard map orientation strings
+        min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+        max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+        
+        feature = {
+            "type": "Feature",
+            "properties": {
+                "name": f"{row['name']}, {row['state']}",
+                "fill_color": [210, 210, 210, 90],
+                "line_color": [160, 160, 160, 120],
+                "hover_info": "Monitoring 4-Product Hazard Consensus"
+            },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [min_lon, row['min_lat']],
+                    [max_lon, row['min_lat']],
+                    [max_lon, row['max_lat']],
+                    [min_lon, row['max_lat']],
+                    [min_lon, row['min_lat']]
+                ]]
+            }
+        }
+        features.append(feature)
+    return {"type": "FeatureCollection", "features": features}
 
 @st.cache_data
 def load_json_layer(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
 
+# Pull the live OSM Data
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
-urban_shapes_geojson = load_json_layer("urban_boundaries.json")
+
+# Generate the spatial layout polygons directly from the OSM data
+urban_shapes_geojson = generate_urban_shapes(urban_gdf)
 
 # --- NWS WARNINGS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -228,13 +304,12 @@ def extract_file(s3_path, idx_suffix=""):
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
-def scan_data(cycle_count):
+def scan_data(cycle_count, towns_df):
     results = {}
     logs = [] 
     
-    town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
+    town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
     
-    # Setup shared geographic boundaries
     master_lat_box = [41.5, 50.0]
     master_lon_slice = slice(360 - 107.0, 360 - 93.5)
     
@@ -259,7 +334,7 @@ def scan_data(cycle_count):
             
             ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
             
-            for _, row in urban_gdf.iterrows():
+            for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 
@@ -270,7 +345,17 @@ def scan_data(cycle_count):
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
-                    town_tallies[key]["details"].append(f"{product}: {val:.2f} (Thresh: {threshold})")
+                    
+                    if product == "RadarOnly_QPE_01H_00.00":
+                        val_inches = val / 25.4
+                        town_tallies[key]["details"].append(f"1-hr QPE: {val_inches:.2f} in (Thresh: 1.00 in)")
+                    elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
+                        val_cfs = val * 91.464
+                        town_tallies[key]["details"].append(f"CREST Unit Flow: {val_cfs:.0f} cfs/sq mi (Thresh: 200 cfs/sq mi)")
+                    elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
+                        val_cfs = val * 91.464
+                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {val_cfs:.0f} cfs/sq mi (Thresh: 1000 cfs/sq mi)")
+                        
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
             logs.append(f"✅ Successfully scanned: {product}")
@@ -292,7 +377,7 @@ def scan_data(cycle_count):
                 cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
                 var_names = [list(d.data_vars)[0] for d in cropped_ds]
                 
-                for _, row in urban_gdf.iterrows():
+                for _, row in towns_df.iterrows():
                     key = f"{row['name']}, {row['state']}"
                     min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                     lats = [row['min_lat'], row['max_lat']]
@@ -305,7 +390,9 @@ def scan_data(cycle_count):
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate History broken: Min Peak {min(v1,v2,v3):.2f}")
+                            
+                            min_peak_in_hr = min(v1, v2, v3) / 25.4
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {min_peak_in_hr:.2f} in/hr (Thresh: 2.00 in/hr over 3 scans)")
                             
                 for d in datasets: d.close()
                 for g in local_gribs:
@@ -316,7 +403,7 @@ def scan_data(cycle_count):
             
     st.session_state['pipeline_diagnostic_logs'] = logs
 
-    # FIXED OPERATIONAL CORE CRITERIA: Alerts now execute at 2 or more active products
+    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 2 OUT OF 4 METRICS
     for town_key, data in town_tallies.items():
         if data["score"] >= 2:
             results[town_key] = {
@@ -349,6 +436,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(nws_warnings_layer)
 
+    # Render the dynamic OSM grey boxes!
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -376,24 +464,22 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
 # --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results = scan_data(count)
+    alert_results = scan_data(count, urban_gdf)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
+# Map the active alerts to the GeoJSON polygon layer 
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [210, 210, 210, 90]     
-    feature["properties"]["line_color"] = [160, 160, 160, 120]     
-    feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
+    feat_name = str(feature["properties"].get("name", "")).upper()
     
-if alert_results:
-    alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
-    for feature in urban_shapes_geojson["features"]:
-        feat_name = str(feature["properties"].get("name", "")).upper()
-        if any(town in feat_name for town in alerted_towns):
-            feature["properties"]["fill_color"] = [255, 0, 0, 200]  
-            feature["properties"]["line_color"] = [150, 0, 0, 255]
-            # FIXED MAP INTERFACE LABEL: Reflected the true 2+ operational trigger threshold
-            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
+    if alert_results and any(town.split(",")[0].strip().upper() in feat_name for town in alert_results.keys()):
+        feature["properties"]["fill_color"] = [255, 0, 0, 200]  
+        feature["properties"]["line_color"] = [150, 0, 0, 255]
+        feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
+    else:
+        feature["properties"]["fill_color"] = [210, 210, 210, 90]     
+        feature["properties"]["line_color"] = [160, 160, 160, 120]     
+        feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
