@@ -179,10 +179,10 @@ def scan_data(cycle_count):
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
-    # SPATIAL ALIGNMENT FIX: 2000x1200 guarantees a precise 1.666 aspect ratio match to the WGS84 bounding box.
+    # SPATIAL ALIGNMENT FIX: Pre-warped Web Mercator (EPSG:3857) image request to perfectly align with the Deck.gl basemap.
     radar_layer = pdk.Layer(
         "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:4326&bbox=-110,40,-90,52&width=2000&height=1200&format=image/png&transparent=true",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
         opacity=0.55,
         visible=show_radar
