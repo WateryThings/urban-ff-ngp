@@ -104,7 +104,6 @@ def get_nws_warnings():
                 event = feature["properties"].get("event", "")
                 
                 if event in ["Flash Flood Warning", "Flood Advisory"]:
-                    
                     headline = feature["properties"].get("headline", "Active Warning")
                     raw_area = feature["properties"].get("areaDesc", "Unknown Area")
                     
@@ -141,7 +140,6 @@ def get_nws_warnings():
 # --- LOCAL STORM REPORTS ENGINE (IEM API FETCH) ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
-    # Pulls all storm reports for the 5-state NGP region over the last 24 hours
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
@@ -150,20 +148,16 @@ def get_lsrs():
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                # The IEM API uses 'type' for the hazard class
                 event_type = str(feature["properties"].get("type", "")).upper()
                 
-                # Filter specifically for Flash Flood reports
                 if event_type == "FLASH FLOOD":
                     remark = feature["properties"].get("remark", "No additional details provided.")
                     city = feature["properties"].get("city", "Unknown")
                     county = feature["properties"].get("county", "Unknown")
                     
-                    # Tooltip Formatting
                     feature["properties"]["name"] = "💧 Flash Flood LSR"
                     feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
                     
-                    # Bright Orange Fill with White Outline to stand out against radar and warnings
                     feature["properties"]["fill_color"] = [255, 140, 0, 220]
                     feature["properties"]["line_color"] = [255, 255, 255, 255]
                     
@@ -299,8 +293,8 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", 
         get_fill_color="properties.fill_color",
-        get_point_radius=3500,               # Creates a 3.5km circle radius on the map
-        point_radius_min_pixels=6,           # Ensures it never shrinks out of sight when zooming out
+        get_point_radius=3500,               
+        point_radius_min_pixels=6,           
         pickable=True, extruded=False,
         visible=show_lsrs
     )
@@ -322,6 +316,7 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
+# Ingest and apply our new bold gray shading across all small towns
 for feature in urban_shapes_geojson["features"]:
     feature["properties"]["fill_color"] = [130, 130, 130, 90]     
     feature["properties"]["line_color"] = [50, 50, 50, 220]       
@@ -330,7 +325,8 @@ for feature in urban_shapes_geojson["features"]:
 if alert_results:
     alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
     for feature in urban_shapes_geojson["features"]:
-        feat_name = str(feature["properties"]["name"]).upper()
+        # Standardized to read the direct town name outputted by the new Places script
+        feat_name = str(feature["properties"].get("name", "")).upper()
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 180]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
