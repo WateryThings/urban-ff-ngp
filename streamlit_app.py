@@ -56,21 +56,7 @@ with col2:
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
-with col3:
-    st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
-    
-    radar_opacity = st.slider(
-        "Radar Opacity", 
-        min_value=0.0, 
-        max_value=1.0, 
-        value=0.55, 
-        step=0.05,
-        help="Adjust the transparency of the Base Reflectivity overlay layer."
-    )
-    
-    toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
-    toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
+# We will let the final column handle the map toggles inside the fragment loop below
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
@@ -246,8 +232,6 @@ def scan_data(cycle_count):
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     
-    # SPEED OPTIMIZATION: Radar image is always loaded into memory, but toggle_radar controls 
-    # its visibility instantly on the client side without triggering a network fetch download.
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -257,14 +241,12 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(radar_layer)
 
-    # 2. CWA Operational Footprints
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2
     )
     layers.append(outline_layer)
     
-    # 3. NWS Active Warnings (Client-side toggling enabled)
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -273,7 +255,6 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(nws_warnings_layer)
 
-    # 4. Urban Consensus Alert Footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -282,7 +263,6 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(urban_polygon_layer)
     
-    # 5. LSRs (Client-side toggling enabled)
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -301,7 +281,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
         }
     )
 
-# --- EXECUTE SCANNER & MAP LOGIC ---
+# --- EXECUTE BACKGROUND CORE MATH SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
     alert_results = scan_data(count)
     live_warnings = get_nws_warnings()
@@ -321,9 +301,36 @@ if alert_results:
             feature["properties"]["line_color"] = [150, 0, 0, 255]
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
-st.subheader("Regional CWA Flash Flood Alert Map")
-st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar, radar_opacity, live_warnings, toggle_warnings, live_lsrs, toggle_lsrs))
+# --- SPEED FIX: THE STREAMLIT GRAPHICS FRAGMENT LAYER ---
+@st.fragment
+def render_isolated_map_interface():
+    # We move the interaction columns directly into the fragment zone
+    with col3:
+        st.write("") # Spacer
+        toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
+        radar_opacity = st.slider(
+            "Radar Opacity", 
+            min_value=0.0, max_value=1.0, value=0.55, step=0.05,
+            help="Adjust the transparency of the Base Reflectivity overlay layer."
+        )
+        toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories and Flash Flood Warnings.")
+        toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports for Flash Flooding over the past 24 hours.")
 
+    # TITLE FIX: Updated title header to exact user preference
+    st.subheader("Urban and Small Towns Flash Flood Alert Map")
+    
+    # Render the Deck inside the fragment. Moving checkboxes now takes milliseconds!
+    st.pydeck_chart(render_map(
+        cwa_geojson, urban_shapes_geojson, 
+        toggle_radar, radar_opacity, 
+        live_warnings, toggle_warnings, 
+        live_lsrs, toggle_lsrs
+    ))
+
+# Execute the isolated visual module
+render_isolated_map_interface()
+
+# --- ALERTS & REPORT CORES ---
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
