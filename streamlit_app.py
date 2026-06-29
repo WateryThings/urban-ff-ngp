@@ -26,19 +26,16 @@ st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
 st.html("""
     <style>
-        /* Eliminate master block container top padding */
         .block-container {
             padding-top: 1rem !important;
             padding-bottom: 1rem !important;
             max-width: 98% !important;
         }
-        /* Tighten margins on elements to pull content upward */
         h1, h2, h3, h4 {
             margin-top: 0.2rem !important;
             margin-bottom: 0.2rem !important;
             padding-top: 0px !important;
         }
-        /* Compress generic element spacing blocks */
         .stElementContainer {
             margin-bottom: 0.4rem !important;
         }
@@ -66,7 +63,7 @@ with time_col:
 
 st.markdown("---")
 
-# --- BLUF & OPERATIONAL USER GUIDE (DIAGNOSTIC 1/4 MODE) ---
+# --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
 **BLUF:** [DIAGNOSTIC SYSTEM CHECK] This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 1 out of the 4** product thresholds are met within a 5-mile buffer.
 """)
@@ -96,10 +93,7 @@ with col3:
     
     radar_opacity = st.slider(
         "Radar Opacity", 
-        min_value=0.0, 
-        max_value=1.0, 
-        value=0.55, 
-        step=0.05,
+        min_value=0.0, max_value=1.0, value=0.55, step=0.05,
         help="Adjust the transparency of the Base Reflectivity overlay layer."
     )
     
@@ -124,7 +118,7 @@ urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
-# --- NWS WARNINGS ENGINE (API DATA FETCH) ---
+# --- NWS WARNINGS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_nws_warnings():
     url = "https://api.weather.gov/alerts/active?area=ND,SD,MN,MT,WY"
@@ -155,7 +149,7 @@ def get_nws_warnings():
                     if event == "Flash Flood Warning":
                         feature["properties"]["fill_color"] = [0, 128, 0, 40]       
                         feature["properties"]["line_color"] = [0, 100, 0, 255]      
-                    else: # Flood Advisory
+                    else: 
                         feature["properties"]["fill_color"] = [144, 238, 144, 50]   
                         feature["properties"]["line_color"] = [50, 205, 50, 255]    
                     filtered_features.append(feature)
@@ -163,7 +157,7 @@ def get_nws_warnings():
     except Exception:
         return {"type": "FeatureCollection", "features": []}
 
-# --- LOCAL STORM REPORTS ENGINE (IEM API FETCH) ---
+# --- LOCAL STORM REPORTS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
@@ -194,7 +188,7 @@ def get_latest_files(fs, product_name, num_files=1):
         files = fs.ls(path)
         grib_files = [f for f in files if f.endswith('.grib2.gz')]
         if not grib_files: return []
-        return grib_files[-num_files:]
+        return sorted(grib_files)[-num_files:]
     except Exception:
         return []
 
@@ -217,50 +211,51 @@ def extract_file(fs, s3_path, idx_suffix=""):
 def scan_data(cycle_count):
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
+    logs = [] # Diagnostic Tracker
+    
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
+    
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
-        if not latest_files: continue
+        if not latest_files: 
+            logs.append(f"❌ Could not find recent files for {product} on NOAA S3.")
+            continue
+            
         local_grib = extract_file(fs, latest_files[0], product)
-        if not local_grib: continue
+        if not local_grib: 
+            logs.append(f"❌ Failed to extract grib file for {product}.")
+            continue
+            
         try:
             ds = xr.open_dataset(local_grib, engine="cfgrib")
             var_name = list(ds.data_vars)[0]
+            
+            # CRITICAL GIS FIX: Determine if dataset latitude arrays run North->South or South->North
+            lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
+            
             for _, row in urban_gdf.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
-                val = ds.sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_name].max().values
+                
+                # Dynamic coordinate bounds orientation check
+                lats = [row['min_lat'], row['max_lat']]
+                lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
+                
+                val = ds.sel(latitude=lat_slice, longitude=slice(min_lon, max_lon))[var_name].max().values
+                
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
-                    town_tallies[key]["details"].append(f"{product}: {val:.2f} (Threshold: {threshold})")
+                    town_tallies[key]["details"].append(f"{product}: {val:.2f} (Thresh: {threshold})")
             ds.close()
             os.remove(local_grib)
-        except Exception:
+            logs.append(f"✅ Successfully scanned product: {product}")
+        except Exception as e:
+            logs.append(f"❌ Crash during processing of {product}: {str(e)}")
             if os.path.exists(local_grib): os.remove(local_grib)
-    rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
-    if len(rate_history_files) == 3:
-        local_gribs = [extract_file(fs, f"rate_{i}") for i, f in enumerate(rate_history_files)]
-        try:
-            datasets = [xr.open_dataset(g, engine="cfgrib") for g in local_gribs if g]
-            if len(datasets) == 3:
-                var_names = [list(d.data_vars)[0] for d in datasets]
-                for _, row in urban_gdf.iterrows():
-                    key = f"{row['name']}, {row['state']}"
-                    min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
-                    v1 = datasets[0].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[0]].max().values
-                    v2 = datasets[1].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[1]].max().values
-                    v3 = datasets[2].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[2]].max().values
-                    if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
-                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                            town_tallies[key]["score"] += 1
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate (3 Scans Exceeded): Min Peak {min(v1,v2,v3):.2f}")
-            for d in datasets: d.close()
-        except Exception:
-            pass
-        for g in local_gribs:
-            if g and os.path.exists(g): os.remove(g)
-            
-    # DIAGNOSTIC MODE: Trigger alerts if any single product criteria is met
+
+    # Output live pipeline updates straight to the Streamlit app state
+    st.session_state['pipeline_diagnostic_logs'] = logs
+
     for town_key, data in town_tallies.items():
         if data["score"] >= 1:
             results[town_key] = {
@@ -272,13 +267,11 @@ def scan_data(cycle_count):
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
-    
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
-        opacity=radar_opacity_val,
-        visible=show_radar
+        opacity=radar_opacity_val, visible=show_radar
     )
     layers.append(radar_layer)
 
@@ -291,8 +284,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        stroke_width=3, line_width_min_pixels=2, pickable=True,
-        visible=show_warnings
+        stroke_width=3, line_width_min_pixels=2, pickable=True, visible=show_warnings
     )
     layers.append(nws_warnings_layer)
 
@@ -307,8 +299,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        get_point_radius=3500, point_radius_min_pixels=6,           
-        pickable=True, visible=show_lsrs
+        get_point_radius=3500, point_radius_min_pixels=6, pickable=True, visible=show_lsrs
     )
     layers.append(lsr_layer)
     
@@ -340,7 +331,6 @@ if alert_results:
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
-            # DIAGNOSTIC MODE HOVER TEXT
             feature["properties"]["hover_info"] = "🚨 DIAGNOSTIC MODE: 1+ HAZARD THRESHOLD EXCEEDED"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
@@ -351,6 +341,14 @@ st.pydeck_chart(render_map(
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
 ))
+
+# --- LIVE PIPELINE DIAGNOSTIC REPORT SIDEBAR/EXPANDER ---
+with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
+    if 'pipeline_diagnostic_logs' in st.session_state:
+        for log in st.session_state['pipeline_diagnostic_logs']:
+            st.write(log)
+    else:
+        st.write("Initializing connections to NOAA data feeds...")
 
 if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
