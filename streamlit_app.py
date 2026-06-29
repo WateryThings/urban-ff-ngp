@@ -24,7 +24,7 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# --- PROTOTYPE WARNING BANNER (Star Wars & Monty Python Protected) ---
+# --- PROTOTYPE WARNING BANNER ---
 st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will likely break at some point, maybe even now! TO USE THIS WEBSITE, YOU MUST BRING US ANOTHER SHRUBBERY OR WE WILL SAY...NI NI NI NI NI NI NI.")
 
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
@@ -81,7 +81,7 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
-@st.cache_data
+# FIX: Removed st.cache_data here so the app is forced to check the actual file for updates
 def load_json_layer(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -236,7 +236,7 @@ def scan_data(cycle_count):
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
-    # 1. Base Radar Mosaic
+    
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -245,13 +245,13 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
         visible=show_radar
     )
     layers.append(radar_layer)
-    # 2. CWA Operational Footprints
+
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
     layers.append(outline_layer)
-    # 3. NWS Active Warnings
+    
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -259,14 +259,16 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
         visible=show_warnings
     )
     layers.append(nws_warnings_layer)
-    # 4. Urban Consensus Alert Footprints
+
+    # FIX: Added update_triggers so Pydeck forces a graphics refresh when switching files
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
+        update_triggers={"get_fill_color": ["properties.fill_color"]}
     )
     layers.append(urban_polygon_layer)
-    # 5. LSRs
+    
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -274,6 +276,7 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
         pickable=True, visible=show_lsrs
     )
     layers.append(lsr_layer)
+    
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
@@ -290,10 +293,9 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# SHADING FIX: Darkening and thickening the "Place" polygons for better visibility
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [80, 80, 80, 160]     # Solid Slate Gray
-    feature["properties"]["line_color"] = [30, 30, 30, 255]     # Dark Charcoal Outline
+    feature["properties"]["fill_color"] = [80, 80, 80, 160]     
+    feature["properties"]["line_color"] = [30, 30, 30, 255]     
     feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
@@ -312,7 +314,6 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    # SUCCESS MESSAGE FIX: Professional operational wording
     st.success("✅ No hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
