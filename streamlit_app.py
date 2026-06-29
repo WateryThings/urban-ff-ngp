@@ -59,7 +59,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
+        ⚠️ CAUTION: This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!
     </div>
 """)
 
@@ -102,9 +102,9 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 1 mile of the polygon edges.
-    * **Alert Expiration:** Alerts update live. The red polygon drops off automatically the exact moment the latest NOAA MRMS scans drop below the 2/4 consensus threshold.
+    * **Alert Expiration (30-Min Cooldown):** <sub>Alerts update live. However, to account for urban runoff and drainage lag, polygons remain highlighted red for 30 minutes after meteorological thresholds drop below the 2/4 consensus.</sub>
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
-    """)
+    """, unsafe_allow_html=True)
 
 with col3:
     st.markdown("#### Map Layers:")
@@ -535,9 +535,42 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
 # --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
+    active_alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
+
+# --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
+if 'alert_history' not in st.session_state:
+    st.session_state['alert_history'] = {}
+
+current_utc_time = datetime.now(timezone.utc)
+alert_results = {}
+
+# 1. Update memory history with newly triggered active alerts
+for town_key, data in active_alert_results.items():
+    st.session_state['alert_history'][town_key] = {
+        "time": current_utc_time,
+        "data": data
+    }
+    alert_results[town_key] = data
+
+# 2. Check history for towns resting in the cooldown window
+keys_to_remove = []
+for town_key, hist in st.session_state['alert_history'].items():
+    if town_key not in active_alert_results:
+        time_since_trigger = current_utc_time - hist["time"]
+        if time_since_trigger <= timedelta(minutes=30):
+            # Town is in the 30-minute cooldown window
+            cooldown_data = hist["data"].copy()
+            cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
+            alert_results[town_key] = cooldown_data
+        else:
+            # Cooldown completely expired
+            keys_to_remove.append(town_key)
+
+# 3. Clean up expired alerts from background memory
+for k in keys_to_remove:
+    del st.session_state['alert_history'][k]
 
 st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
 st.session_state['feed_health'] = feed_health
@@ -559,13 +592,13 @@ for feature in urban_shapes_geojson["features"]:
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
 # --- NEW: DATA FEED HEALTH DASHBOARD ---
-st.markdown("##### 🌱 Live Data Feed Health")
+st.markdown("##### 📡 Live Data Feed Health")
 health_cols = st.columns(4)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
-    "PrecipRate_00.00": "MRMS Instantaneous Rain Rates",
-    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
-    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Unit Streamflow"
+    "PrecipRate_00.00": "MRMS Rain Rates",
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
+    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
 }
 for i, (prod, name) in enumerate(friendly_names.items()):
     status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
@@ -589,7 +622,7 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ No urban hydro hazards detected - at ease soldier.")
+    st.success("✅ No hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
