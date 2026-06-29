@@ -24,7 +24,7 @@ RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 # --- APP LAYOUT ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# --- PROTOTYPE WARNING BANNER ---
+# --- PROTOTYPE WARNING BANNER (Star Wars & Monty Python Protected) ---
 st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will likely break at some point, maybe even now! TO USE THIS WEBSITE, YOU MUST BRING US ANOTHER SHRUBBERY OR WE WILL SAY...NI NI NI NI NI NI NI.")
 
 st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
@@ -51,9 +51,9 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * Bold Gray Polygons: Spatial extent of monitored urban and small towns.
-    * Solid Red Polygons: 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
-    * Automated Refresh: Updates every 2-minutes to sync with live MRMS data feed.
+    * **Solid Slate Polygons:** Spatial extent of monitored urban areas and small towns.
+    * **Solid Red Polygons:** 3 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
 with col3:
@@ -96,17 +96,14 @@ def get_nws_warnings():
     url = "https://api.weather.gov/alerts/active?area=ND,SD,MN,MT,WY"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
-    
     try:
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 event = feature["properties"].get("event", "")
-                
                 if event in ["Flash Flood Warning", "Flood Advisory"]:
                     headline = feature["properties"].get("headline", "Active Warning")
                     raw_area = feature["properties"].get("areaDesc", "Unknown Area")
-                    
                     formatted_areas = []
                     for a in raw_area.split(";"):
                         a = a.strip()
@@ -118,21 +115,16 @@ def get_nws_warnings():
                                 formatted_areas.append(f"{a} County")
                         else:
                             formatted_areas.append(a)
-                    
                     clean_area = ", ".join(formatted_areas)
-                    
                     feature["properties"]["name"] = f"⚠️ {event}"
                     feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected Counties:</b> {clean_area}"
-                    
                     if event == "Flash Flood Warning":
                         feature["properties"]["fill_color"] = [0, 128, 0, 40]       
                         feature["properties"]["line_color"] = [0, 100, 0, 255]      
                     else: # Flood Advisory
                         feature["properties"]["fill_color"] = [144, 238, 144, 50]   
                         feature["properties"]["line_color"] = [50, 205, 50, 255]    
-                        
                     filtered_features.append(feature)
-                    
             return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
         return {"type": "FeatureCollection", "features": []}
@@ -143,26 +135,20 @@ def get_lsrs():
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
-    
     try:
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 event_type = str(feature["properties"].get("type", "")).upper()
-                
                 if event_type == "FLASH FLOOD":
                     remark = feature["properties"].get("remark", "No additional details provided.")
                     city = feature["properties"].get("city", "Unknown")
                     county = feature["properties"].get("county", "Unknown")
-                    
                     feature["properties"]["name"] = "💧 Flash Flood LSR"
                     feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
-                    
                     feature["properties"]["fill_color"] = [255, 140, 0, 220]
                     feature["properties"]["line_color"] = [255, 255, 255, 255]
-                    
                     filtered_features.append(feature)
-                    
             return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
         return {"type": "FeatureCollection", "features": []}
@@ -197,9 +183,7 @@ def extract_file(fs, s3_path, idx_suffix=""):
 def scan_data(cycle_count):
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
-    
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
-    
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(fs, product, num_files=1)
         if not latest_files: continue
@@ -212,7 +196,6 @@ def scan_data(cycle_count):
                 key = f"{row['name']}, {row['state']}"
                 min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 val = ds.sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_name].max().values
-                
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
                     town_tallies[key]["details"].append(f"{product}: {val:.2f} (Threshold: {threshold})")
@@ -220,7 +203,6 @@ def scan_data(cycle_count):
             os.remove(local_grib)
         except Exception:
             if os.path.exists(local_grib): os.remove(local_grib)
-
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
@@ -231,11 +213,9 @@ def scan_data(cycle_count):
                 for _, row in urban_gdf.iterrows():
                     key = f"{row['name']}, {row['state']}"
                     min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
-                    
                     v1 = datasets[0].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[0]].max().values
                     v2 = datasets[1].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[1]].max().values
                     v3 = datasets[2].sel(latitude=slice(row['max_lat'], row['min_lat']), longitude=slice(min_lon, max_lon))[var_names[2]].max().values
-                    
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
@@ -245,20 +225,18 @@ def scan_data(cycle_count):
             pass
         for g in local_gribs:
             if g and os.path.exists(g): os.remove(g)
-            
     for town_key, data in town_tallies.items():
         if data["score"] >= 3:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
             }
-            
     return results
 
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
-    
+    # 1. Base Radar Mosaic
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -267,39 +245,35 @@ def render_map(cwa_layer, city_shapes, show_radar, warnings_data, show_warnings,
         visible=show_radar
     )
     layers.append(radar_layer)
-
+    # 2. CWA Operational Footprints
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=3,
         get_line_color=[0, 150, 255, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=2,
     )
     layers.append(outline_layer)
-    
+    # 3. NWS Active Warnings
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        stroke_width=3, line_width_min_pixels=2, pickable=True, extruded=False,
+        stroke_width=3, line_width_min_pixels=2, pickable=True,
         visible=show_warnings
     )
     layers.append(nws_warnings_layer)
-
+    # 4. Urban Consensus Alert Footprints
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
     )
     layers.append(urban_polygon_layer)
-    
+    # 5. LSRs
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
-        get_line_color="properties.line_color", 
-        get_fill_color="properties.fill_color",
-        get_point_radius=3500,               
-        point_radius_min_pixels=6,           
-        pickable=True, extruded=False,
-        visible=show_lsrs
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        get_point_radius=3500, point_radius_min_pixels=6,           
+        pickable=True, visible=show_lsrs
     )
     layers.append(lsr_layer)
-    
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
@@ -316,19 +290,18 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# Ingest and apply our new bold gray shading across all small towns
+# SHADING FIX: Darkening and thickening the "Place" polygons for better visibility
 for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [130, 130, 130, 90]     
-    feature["properties"]["line_color"] = [50, 50, 50, 220]       
+    feature["properties"]["fill_color"] = [80, 80, 80, 160]     # Solid Slate Gray
+    feature["properties"]["line_color"] = [30, 30, 30, 255]     # Dark Charcoal Outline
     feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
     
 if alert_results:
     alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
     for feature in urban_shapes_geojson["features"]:
-        # Standardized to read the direct town name outputted by the new Places script
         feat_name = str(feature["properties"].get("name", "")).upper()
         if any(town in feat_name for town in alerted_towns):
-            feature["properties"]["fill_color"] = [255, 0, 0, 180]  
+            feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
 
@@ -339,7 +312,8 @@ if alert_results:
     st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
     st.json(alert_results)
 else:
-    st.success("✅ All systems normal. No multi-product severe hazards detected across operational domains.")
+    # SUCCESS MESSAGE FIX: Professional operational wording
+    st.success("✅ No hydro hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
