@@ -59,7 +59,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        ⚠️ CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
+        💣 CAUTION: This tool is an experimental prototype (similar to the first evolutionary moss). At it's best, warning excellence is a moonshot. At it's worst, it will update by 2067.
     </div>
 """)
 
@@ -559,7 +559,7 @@ for feature in urban_shapes_geojson["features"]:
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
 # --- NEW: DATA FEED HEALTH DASHBOARD ---
-st.markdown("##### 📡 Live Data Feed Health")
+st.markdown("##### 🌱 Live Data Feed Health")
 health_cols = st.columns(4)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
