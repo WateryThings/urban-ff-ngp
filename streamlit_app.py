@@ -10,7 +10,6 @@ import json
 import urllib.request
 import pydeck as pdk
 import time
-import requests
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
@@ -23,10 +22,13 @@ PRODUCTS = {
 RAIN_RATE_PROD = "PrecipRate_00.00"
 RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
+# Buffer Constants (5 Miles converted to Decimal Degrees)
+BUFFER_DEG_LAT = 0.072 
+BUFFER_DEG_LON = 0.102 
+
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# FIX: Increased padding-top to 5.5rem to force the layout completely below Streamlit's hidden navbar overlay
 st.html("""
     <style>
         .block-container {
@@ -81,7 +83,7 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer of the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -98,8 +100,8 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns.
-    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
+    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 5 miles of the polygon edges.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
@@ -114,84 +116,76 @@ with col3:
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
-# --- OSM OVERPASS API: DYNAMICALLY FETCH EVERY TOWN ---
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_urban_centers():
-    url = "https://overpass-api.de/api/interpreter"
-    # Overpass query targeting nodes designated as city, town, or village inside your exact regional bounding box
-    query = '[out:json];node["place"~"city|town|village"](41.5,-107.0,50.0,-93.5);out body;'
-    
-    try:
-        response = requests.get(url, params={"data": query}, timeout=15)
-        data = response.json()
-        
-        records = []
-        for el in data.get("elements", []):
-            lat = el["lat"]
-            lon = el["lon"]
-            name = el["tags"].get("name", "Unknown")
-            state = el["tags"].get("is_in:state", "NGP")
-            
-            # Mathematically extrapolate the 5-mile operational warning buffers around the coordinate centers
-            # 1 degree lat ≈ 69 miles -> 5 miles ≈ 0.072 deg
-            # 1 degree lon at 45N ≈ 49 miles -> 5 miles ≈ 0.102 deg
-            records.append({
-                "name": name,
-                "state": state,
-                "lat": lat,
-                "lon": lon,
-                "min_lat": lat - 0.072,
-                "max_lat": lat + 0.072,
-                "min_lon": lon - 0.102,
-                "max_lon": lon + 0.102
-            })
-        return pd.DataFrame(records).dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
-    except Exception as e:
-        st.sidebar.error(f"OSM Overpass API Connection Failure: {str(e)}")
-        return pd.DataFrame(columns=["name", "state", "lat", "lon", "min_lat", "max_lat", "min_lon", "max_lon"])
 
-# --- GIS OPTIMIZATION: GENERATE FOOTPRINTS DIRECTLY FROM DYNAMIC BOUNDING BOXES ---
+# --- DATABASE LOADING ---
 @st.cache_data
-def generate_urban_shapes(_df):
-    features = []
-    for _, row in _df.iterrows():
-        # Ensure longitudes match standard map orientation strings
-        min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-        max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
-        
-        feature = {
-            "type": "Feature",
-            "properties": {
-                "name": f"{row['name']}, {row['state']}",
-                "fill_color": [210, 210, 210, 90],
-                "line_color": [160, 160, 160, 120],
-                "hover_info": "Monitoring 4-Product Hazard Consensus"
-            },
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[
-                    [min_lon, row['min_lat']],
-                    [max_lon, row['min_lat']],
-                    [max_lon, row['max_lat']],
-                    [min_lon, row['max_lat']],
-                    [min_lon, row['min_lat']]
-                ]]
-            }
-        }
-        features.append(feature)
-    return {"type": "FeatureCollection", "features": features}
+def get_urban_centers():
+    df = pd.read_csv("urban_centers.csv")
+    df['min_lon'] = pd.to_numeric(df['min_lon'], errors='coerce')
+    df['max_lon'] = pd.to_numeric(df['max_lon'], errors='coerce')
+    df['min_lat'] = pd.to_numeric(df['min_lat'], errors='coerce')
+    df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
+    return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
 
 @st.cache_data
 def load_json_layer(filepath):
-    with open(filepath, "r") as f:
-        return json.load(f)
+    try:
+        with open(filepath, "r") as f:
+            return json.load(f)
+    except:
+        return {"type": "FeatureCollection", "features": []}
 
-# Pull the live OSM Data
+@st.cache_data
+def generate_hybrid_urban_shapes(csv_df, existing_geojson):
+    """
+    Loads detailed large city boundaries from JSON, then injects 
+    custom rectangular boundaries for all missing small towns from the CSV.
+    """
+    # Track which cities are already in the detailed boundary file
+    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in existing_geojson.get("features", [])]
+    
+    # Inject missing small towns as polygons based on their CSV bounds
+    for _, row in csv_df.iterrows():
+        town_name = f"{row['name']}, {row['state']}".strip().upper()
+        
+        if town_name not in existing_names:
+            min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+            max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+            
+            feature = {
+                "type": "Feature",
+                "properties": {
+                    "name": f"{row['name']}, {row['state']}"
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [min_lon, row['min_lat']],
+                        [max_lon, row['min_lat']],
+                        [max_lon, row['max_lat']],
+                        [min_lon, row['max_lat']],
+                        [min_lon, row['min_lat']]
+                    ]]
+                }
+            }
+            existing_geojson["features"].append(feature)
+            
+    # Apply darker, higher-visibility base styling to ALL locations
+    for feature in existing_geojson["features"]:
+        feature["properties"]["fill_color"] = [100, 100, 100, 160]     
+        feature["properties"]["line_color"] = [70, 70, 70, 200]     
+        feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
+        
+    return existing_geojson
+
+# Load databases
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
+raw_urban_boundaries = load_json_layer("urban_boundaries.json")
 
-# Generate the spatial layout polygons directly from the OSM data
-urban_shapes_geojson = generate_urban_shapes(urban_gdf)
+# Generate the hybrid polygon map featuring all 1,146 locations
+urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
+
 
 # --- NWS WARNINGS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -232,6 +226,7 @@ def get_nws_warnings():
     except Exception:
         return {"type": "FeatureCollection", "features": []}
 
+
 # --- LOCAL STORM REPORTS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
@@ -255,6 +250,7 @@ def get_lsrs():
             return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
         return {"type": "FeatureCollection", "features": []}
+
 
 # --- CACHED FILE LIST LAYER ---
 @st.cache_data(ttl=60, show_spinner=False)
@@ -302,6 +298,7 @@ def extract_file(s3_path, idx_suffix=""):
         if os.path.exists(local_grib): os.remove(local_grib)
         return None
 
+
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
 def scan_data(cycle_count, towns_df):
@@ -344,12 +341,24 @@ def scan_data(cycle_count, towns_df):
             
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
-                min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 
-                lats = [row['min_lat'], row['max_lat']]
-                lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
+                # EXTRACT TRUE EDGES
+                c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
+                c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                 
-                val = ds_cropped.sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_name].max().values
+                # APPLY 5-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
+                b_min_lat = c_min_lat - BUFFER_DEG_LAT
+                b_max_lat = c_max_lat + BUFFER_DEG_LAT
+                
+                b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
+                b_max_lon_raw = max(c_min_lon, c_max_lon) + BUFFER_DEG_LON
+                
+                # Slicing Math Integration
+                lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
+                lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
+                
+                val = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name].max().values
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
@@ -373,6 +382,7 @@ def scan_data(cycle_count, towns_df):
             feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
+
     # --- SCAN SUSTAINED INSTANTANEOUS RAIN RATE BLOCK (3 SCANS) ---
     rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
@@ -389,18 +399,28 @@ def scan_data(cycle_count, towns_df):
                 
                 for _, row in towns_df.iterrows():
                     key = f"{row['name']}, {row['state']}"
-                    min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
-                    lats = [row['min_lat'], row['max_lat']]
-                    lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
                     
-                    v1 = cropped_ds[0].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[0]].max().values
-                    v2 = cropped_ds[1].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[1]].max().values
-                    v3 = cropped_ds[2].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[2]].max().values
+                    # EXTRACT TRUE EDGES
+                    c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
+                    c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                    c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                    
+                    # APPLY 5-MILE BUFFER AROUND THE ENTIRE CITY POLYGON EDGE
+                    b_min_lat = c_min_lat - BUFFER_DEG_LAT
+                    b_max_lat = c_max_lat + BUFFER_DEG_LAT
+                    b_min_lon_raw = min(c_min_lon, c_max_lon) - BUFFER_DEG_LON
+                    b_max_lon_raw = max(c_min_lon, c_max_lon) + BUFFER_DEG_LON
+                    
+                    lat_slice = slice(min(b_min_lat, b_max_lat), max(b_min_lat, b_max_lat)) if lat_ascending else slice(max(b_min_lat, b_max_lat), min(b_min_lat, b_max_lat))
+                    lon_slice = slice((b_min_lon_raw % 360), (b_max_lon_raw % 360))
+                    
+                    v1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]].max().values
+                    v2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]].max().values
+                    v3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]].max().values
                     
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
-                            
                             min_peak_in_hr = round(min(v1, v2, v3) / 25.4, 2)
                             town_tallies[key]["details"].append(f"Sustained Rain Rate: {min_peak_in_hr} in/hr (Thresh: 2.00 in/hr over 3 scans)")
                             
@@ -423,6 +443,7 @@ def scan_data(cycle_count, towns_df):
                 "Trigger Details": data["details"]
             }
     return results, logs, feed_health
+
 
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
@@ -448,7 +469,6 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(nws_warnings_layer)
 
-    # Render the dynamic OSM grey boxes!
     urban_polygon_layer = pdk.Layer(
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -492,8 +512,9 @@ for feature in urban_shapes_geojson["features"]:
         feature["properties"]["line_color"] = [150, 0, 0, 255]
         feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
     else:
-        feature["properties"]["fill_color"] = [210, 210, 210, 90]     
-        feature["properties"]["line_color"] = [160, 160, 160, 120]     
+        # Re-apply base state in case the map re-renders after an alert expires
+        feature["properties"]["fill_color"] = [100, 100, 100, 160]     
+        feature["properties"]["line_color"] = [70, 70, 70, 200]     
         feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
