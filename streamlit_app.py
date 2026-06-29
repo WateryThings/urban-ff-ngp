@@ -141,16 +141,28 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
     Loads detailed large city boundaries from JSON, then injects 
     custom rectangular boundaries for all missing small towns from the CSV.
     """
-    # Track which cities are already in the detailed boundary file
     existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in existing_geojson.get("features", [])]
     
-    # Inject missing small towns as polygons based on their CSV bounds
     for _, row in csv_df.iterrows():
         town_name = f"{row['name']}, {row['state']}".strip().upper()
         
         if town_name not in existing_names:
-            min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-            max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+            # Ensure absolute Min and Max are strictly ordered
+            min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+            max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+            
+            true_min_lon = min(min_lon_raw, max_lon_raw)
+            true_max_lon = max(min_lon_raw, max_lon_raw)
+            true_min_lat = min(row['min_lat'], row['max_lat'])
+            true_max_lat = max(row['min_lat'], row['max_lat'])
+            
+            # DATA ANOMALY CLAMP: If the CSV bounding box is absurdly large (e.g. > 10 miles wide),
+            # clamp it down to a standard visual small-town radius so it doesn't wreck the map overlay.
+            if (true_max_lat - true_min_lat > 0.15) or (true_max_lon - true_min_lon > 0.15):
+                center_lat = (true_min_lat + true_max_lat) / 2.0
+                center_lon = (true_min_lon + true_max_lon) / 2.0
+                true_min_lat, true_max_lat = center_lat - 0.02, center_lat + 0.02
+                true_min_lon, true_max_lon = center_lon - 0.02, center_lon + 0.02
             
             feature = {
                 "type": "Feature",
@@ -160,17 +172,16 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[
-                        [min_lon, row['min_lat']],
-                        [max_lon, row['min_lat']],
-                        [max_lon, row['max_lat']],
-                        [min_lon, row['max_lat']],
-                        [min_lon, row['min_lat']]
+                        [true_min_lon, true_min_lat],
+                        [true_max_lon, true_min_lat],
+                        [true_max_lon, true_max_lat],
+                        [true_min_lon, true_max_lat],
+                        [true_min_lon, true_min_lat]
                     ]]
                 }
             }
             existing_geojson["features"].append(feature)
             
-    # Apply darker, higher-visibility base styling to ALL locations
     for feature in existing_geojson["features"]:
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
@@ -304,12 +315,6 @@ def extract_file(s3_path, idx_suffix=""):
 def scan_data(cycle_count, towns_df):
     results = {}
     logs = [] 
-    feed_health = {
-        "RadarOnly_QPE_01H_00.00": "🔴 Offline",
-        "PrecipRate_00.00": "🔴 Offline",
-        "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "🔴 Offline",
-        "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "🔴 Offline"
-    }
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
     
@@ -321,13 +326,11 @@ def scan_data(cycle_count, towns_df):
         latest_files = get_latest_files(product, num_files=1)
         if not latest_files: 
             logs.append(f"❌ Could not find recent files for {product} on NOAA S3.")
-            feed_health[product] = "🔴 Missing S3 Data"
             continue
             
         local_grib = extract_file(latest_files[0], product)
         if not local_grib: 
             logs.append(f"❌ Failed to extract grib file for {product}.")
-            feed_health[product] = "🔴 Extract Failed"
             continue
             
         try:
@@ -364,22 +367,20 @@ def scan_data(cycle_count, towns_df):
                     town_tallies[key]["score"] += 1
                     
                     if product == "RadarOnly_QPE_01H_00.00":
-                        val_inches = round(val / 25.4, 2)
-                        town_tallies[key]["details"].append(f"1-hr QPE: {val_inches} in (Thresh: 1.00 in)")
+                        v_in = float(val / 25.4)
+                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in)")
                     elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
-                        val_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"CREST Unit Flow: {val_cfs} cfs/sq mi (Thresh: 200 cfs/sq mi)")
+                        v_cfs = int(round(val * 91.464))
+                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200)")
                     elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
-                        val_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {val_cfs} cfs/sq mi (Thresh: 1000 cfs/sq mi)")
+                        v_cfs = int(round(val * 91.464))
+                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000)")
                         
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
             logs.append(f"✅ Successfully scanned: {product}")
-            feed_health[product] = "🟢 Active & Loaded"
         except Exception as e:
             logs.append(f"❌ Crash on {product}: {str(e)}")
-            feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
 
@@ -421,19 +422,18 @@ def scan_data(cycle_count, towns_df):
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
-                            min_peak_in_hr = round(min(v1, v2, v3) / 25.4, 2)
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {min_peak_in_hr} in/hr (Thresh: 2.00 in/hr over 3 scans)")
+                            
+                            pk_hr = float(min(v1, v2, v3) / 25.4)
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr)")
                             
                 for d in datasets: d.close()
                 for g in local_gribs:
                     if g and os.path.exists(g): os.remove(g)
                 logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
-                feed_health[RAIN_RATE_PROD] = "🟢 Active (3-Scans)"
         except Exception as e:
             logs.append(f"❌ Rain Rate History processing error: {str(e)}")
-            feed_health[RAIN_RATE_PROD] = "🟡 Parse Error"
-    else:
-        feed_health[RAIN_RATE_PROD] = "🔴 Missing 3-Scan History"
+
+    st.session_state['pipeline_diagnostic_logs'] = logs
 
     # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 2 OUT OF 4 METRICS
     for town_key, data in town_tallies.items():
@@ -442,8 +442,7 @@ def scan_data(cycle_count, towns_df):
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
             }
-    return results, logs, feed_health
-
+    return results
 
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
@@ -496,12 +495,9 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
 # --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
+    alert_results = scan_data(count, urban_gdf)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
-
-st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
-st.session_state['feed_health'] = feed_health
 
 # Map the active alerts to the GeoJSON polygon layer 
 for feature in urban_shapes_geojson["features"]:
@@ -512,25 +508,11 @@ for feature in urban_shapes_geojson["features"]:
         feature["properties"]["line_color"] = [150, 0, 0, 255]
         feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
     else:
-        # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
         feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
-
-# --- NEW: DATA FEED HEALTH DASHBOARD ---
-st.markdown("##### 📡 Live Data Feed Health")
-health_cols = st.columns(4)
-friendly_names = {
-    "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
-    "PrecipRate_00.00": "MRMS Rain Rates",
-    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
-    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
-}
-for i, (prod, name) in enumerate(friendly_names.items()):
-    status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
-    health_cols[i].info(f"**{name}**\n\n{status}")
 
 st.pydeck_chart(render_map(
     cwa_geojson, urban_shapes_geojson, 
