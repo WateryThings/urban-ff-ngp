@@ -59,7 +59,7 @@ with col2:
 with col3:
     st.markdown("#### Map Layers:")
     toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
-    toggle_warnings = st.checkbox("Overlay Flood Warnings", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green) for the NGP region.")
+    toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
 
 # --- TIMESTAMP READOUT ---
 utc_now = datetime.now(timezone.utc)
