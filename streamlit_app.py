@@ -102,6 +102,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the thresholds anywhere within 5 miles of the polygon edges.
+    * **Alert Expiration:** Alerts update live. The red polygon drops off automatically the exact moment the latest NOAA MRMS scans drop below the 2/4 consensus threshold.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
@@ -314,7 +315,13 @@ def extract_file(s3_path, idx_suffix=""):
 @st.cache_data(show_spinner=False)
 def scan_data(cycle_count, towns_df):
     results = {}
-    logs = [] 
+    logs = []
+    feed_health = {
+        "RadarOnly_QPE_01H_00.00": "🔴 Offline",
+        "PrecipRate_00.00": "🔴 Offline",
+        "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "🔴 Offline",
+        "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "🔴 Offline"
+    }
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
     
@@ -326,11 +333,22 @@ def scan_data(cycle_count, towns_df):
         latest_files = get_latest_files(product, num_files=1)
         if not latest_files: 
             logs.append(f"❌ Could not find recent files for {product} on NOAA S3.")
+            feed_health[product] = "🔴 Missing S3 Data"
             continue
             
-        local_grib = extract_file(latest_files[0], product)
+        s3_path = latest_files[0]
+        # Parse the timestamp dynamically from the NOAA S3 file name string
+        try:
+            t_str = s3_path.split('_')[-1].split('.')[0]
+            dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S")
+            scan_time = dt_obj.strftime("%H:%M UTC")
+        except:
+            scan_time = "Live Scan"
+            
+        local_grib = extract_file(s3_path, product)
         if not local_grib: 
             logs.append(f"❌ Failed to extract grib file for {product}.")
+            feed_health[product] = "🔴 Extract Failed"
             continue
             
         try:
@@ -368,25 +386,42 @@ def scan_data(cycle_count, towns_df):
                     
                     if product == "RadarOnly_QPE_01H_00.00":
                         v_in = float(val / 25.4)
-                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in)")
+                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
                     elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
                         v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200)")
+                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
                     elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
                         v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000)")
+                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
                         
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
             logs.append(f"✅ Successfully scanned: {product}")
+            feed_health[product] = "🟢 Active & Loaded"
         except Exception as e:
             logs.append(f"❌ Crash on {product}: {str(e)}")
+            feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
 
     # --- SCAN SUSTAINED INSTANTANEOUS RAIN RATE BLOCK (3 SCANS) ---
     rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
+        # Extract Time Range for the 3 scans
+        time_window = []
+        for f in rate_history_files:
+            try:
+                t_str = f.split('_')[-1].split('.')[0]
+                dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S")
+                time_window.append(dt_obj.strftime("%H:%M UTC"))
+            except:
+                pass
+        
+        if len(time_window) > 1:
+            time_range_str = f"[{time_window[0]} to {time_window[-1]}]"
+        else:
+            time_range_str = "[Live Scans]"
+            
         try:
             local_gribs = [extract_file(f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
             datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
@@ -424,14 +459,19 @@ def scan_data(cycle_count, towns_df):
                             town_tallies[key]["score"] += 1
                             
                             pk_hr = float(min(v1, v2, v3) / 25.4)
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr)")
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr) {time_range_str}")
                             
                 for d in datasets: d.close()
                 for g in local_gribs:
                     if g and os.path.exists(g): os.remove(g)
                 logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
+                feed_health[RAIN_RATE_PROD] = "🟢 Active (3-Scans)"
         except Exception as e:
             logs.append(f"❌ Rain Rate History processing error: {str(e)}")
+            feed_health[RAIN_RATE_PROD] = "🟡 Parse Error"
+    else:
+        logs.append(f"⚠️ {RAIN_RATE_PROD} waiting for more scans ({len(rate_history_files)}/3)")
+        feed_health[RAIN_RATE_PROD] = f"🟡 WAITING ({len(rate_history_files)}/3 Scans)"
 
     st.session_state['pipeline_diagnostic_logs'] = logs
 
@@ -442,7 +482,7 @@ def scan_data(cycle_count, towns_df):
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
             }
-    return results
+    return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
 def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
@@ -495,9 +535,12 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
 # --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results = scan_data(count, urban_gdf)
+    alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
+
+st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
+st.session_state['feed_health'] = feed_health
 
 # Map the active alerts to the GeoJSON polygon layer 
 for feature in urban_shapes_geojson["features"]:
@@ -508,11 +551,25 @@ for feature in urban_shapes_geojson["features"]:
         feature["properties"]["line_color"] = [150, 0, 0, 255]
         feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
     else:
+        # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
         feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
+
+# --- NEW: DATA FEED HEALTH DASHBOARD ---
+st.markdown("##### 📡 Live Data Feed Health")
+health_cols = st.columns(4)
+friendly_names = {
+    "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
+    "PrecipRate_00.00": "MRMS Rain Rates",
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
+    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
+}
+for i, (prod, name) in enumerate(friendly_names.items()):
+    status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
+    health_cols[i].info(f"**{name}**\n\n{status}")
 
 st.pydeck_chart(render_map(
     cwa_geojson, urban_shapes_geojson, 
