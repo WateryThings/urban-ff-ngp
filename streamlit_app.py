@@ -64,9 +64,9 @@ with time_col:
 
 st.markdown("---")
 
-# --- BLUF & OPERATIONAL USER GUIDE ---
+# --- BLUF & OPERATIONAL USER GUIDE (UPDATED TO 2/4) ---
 st.markdown("""
-**BLUF:** [DIAGNOSTIC SYSTEM CHECK] This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 1 out of the 4** product thresholds are met within a 5-mile buffer.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 2 out of the 4** product thresholds are met within a 5-mile buffer.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -84,7 +84,7 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Translucent Gray Polygons:** Spatial extent of monitored urban areas and small towns.
-    * **Solid Red Polygons:** 1 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
+    * **Solid Red Polygons:** 2 out of the 4 MRMS products exceed the listed thresholds within the buffer area. Details about this area will be displayed below the map.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """)
 
@@ -210,8 +210,6 @@ def get_latest_files(product_name, num_files=1):
 
 def extract_file(s3_path, idx_suffix=""):
     fs = s3fs.S3FileSystem(anon=True)
-    
-    # COLLISION FIX: Inject a nanosecond timestamp so threads never conflict or delete each other's files
     temporal_id = time.time_ns()
     local_gz = f"temp_{idx_suffix}_{temporal_id}.grib2.gz"
     local_grib = f"temp_{idx_suffix}_{temporal_id}.grib2"
@@ -236,6 +234,11 @@ def scan_data(cycle_count):
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in urban_gdf.iterrows()}
     
+    # Setup shared geographic boundaries
+    master_lat_box = [41.5, 50.0]
+    master_lon_slice = slice(360 - 107.0, 360 - 93.5)
+    
+    # --- SCAN CORE PRODUCTS BLOCK ---
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(product, num_files=1)
         if not latest_files: 
@@ -248,26 +251,17 @@ def scan_data(cycle_count):
             continue
             
         try:
-            # COLLISION FIX: Explicitly disable sidecar writing to force purely in-RAM parsing
             ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
             var_name = list(ds.data_vars)[0]
             
             lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
+            master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
             
-            # Crop down to regional footprint box
-            master_lat_slice = slice(41.5, 50.0) if lat_ascending else slice(50.0, 41.5)
-            master_lon_slice = slice(360 - 107.0, 360 - 93.5)
-            
-            ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice)
-            ds_cropped = ds_cropped.load()
+            ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
             
             for _, row in urban_gdf.iterrows():
                 key = f"{row['name']}, {row['state']}"
-                
-                # Double wrap safety structure for negative longitude math variations
-                lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                min_lon = lon_raw % 360
-                max_lon = (row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']) % 360
+                min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
                 
                 lats = [row['min_lat'], row['max_lat']]
                 lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
@@ -278,17 +272,53 @@ def scan_data(cycle_count):
                     town_tallies[key]["score"] += 1
                     town_tallies[key]["details"].append(f"{product}: {val:.2f} (Thresh: {threshold})")
             ds.close()
-            if os.path.exists(local_grib):
-                os.remove(local_grib)
+            if os.path.exists(local_grib): os.remove(local_grib)
             logs.append(f"✅ Successfully scanned: {product}")
         except Exception as e:
             logs.append(f"❌ Crash on {product}: {str(e)}")
             if os.path.exists(local_grib): os.remove(local_grib)
 
+    # --- SCAN SUSTAINED INSTANTANEOUS RAIN RATE BLOCK (3 SCANS) ---
+    rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
+    if len(rate_history_files) == 3:
+        try:
+            local_gribs = [extract_file(f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
+            datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
+            
+            if len(datasets) == 3:
+                lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
+                master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
+                
+                cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
+                var_names = [list(d.data_vars)[0] for d in cropped_ds]
+                
+                for _, row in urban_gdf.iterrows():
+                    key = f"{row['name']}, {row['state']}"
+                    min_lon, max_lon = row['min_lon'] % 360, row['max_lon'] % 360
+                    lats = [row['min_lat'], row['max_lat']]
+                    lat_slice = slice(min(lats), max(lats)) if lat_ascending else slice(max(lats), min(lats))
+                    
+                    v1 = cropped_ds[0].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[0]].max().values
+                    v2 = cropped_ds[1].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[1]].max().values
+                    v3 = cropped_ds[2].sel(latitude=lat_slice, longitude=slice(min(min_lon, max_lon), max(min_lon, max_lon)))[var_names[2]].max().values
+                    
+                    if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
+                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
+                            town_tallies[key]["score"] += 1
+                            town_tallies[key]["details"].append(f"Sustained Rain Rate History broken: Min Peak {min(v1,v2,v3):.2f}")
+                            
+                for d in datasets: d.close()
+                for g in local_gribs:
+                    if g and os.path.exists(g): os.remove(g)
+                logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
+        except Exception as e:
+            logs.append(f"❌ Rain Rate History processing error: {str(e)}")
+            
     st.session_state['pipeline_diagnostic_logs'] = logs
 
+    # FIXED OPERATIONAL CORE CRITERIA: Alerts now execute at 2 or more active products
     for town_key, data in town_tallies.items():
-        if data["score"] >= 1:
+        if data["score"] >= 2:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
                 "Trigger Details": data["details"]
@@ -362,7 +392,8 @@ if alert_results:
         if any(town in feat_name for town in alerted_towns):
             feature["properties"]["fill_color"] = [255, 0, 0, 200]  
             feature["properties"]["line_color"] = [150, 0, 0, 255]
-            feature["properties"]["hover_info"] = "🚨 DIAGNOSTIC MODE: 1+ HAZARD THRESHOLD EXCEEDED"
+            # FIXED MAP INTERFACE LABEL: Reflected the true 2+ operational trigger threshold
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
