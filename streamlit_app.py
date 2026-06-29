@@ -92,7 +92,7 @@ col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds (2/4 must be met):
+    #### Monitored Products & Thresholds:
     * MRMS 1-hr QPE: $\ge$ 1.0"
     * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
     * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
@@ -599,7 +599,7 @@ for feature in urban_shapes_geojson["features"]:
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
 # --- NEW: DATA FEED HEALTH DASHBOARD ---
-st.markdown("##### 📡 Live Data Feed Health")
+st.markdown("##### 	🌱 Live Data Feed Health")
 health_cols = st.columns(4)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
