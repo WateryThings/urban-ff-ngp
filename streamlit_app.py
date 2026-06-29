@@ -21,16 +21,54 @@ PRODUCTS = {
 RAIN_RATE_PROD = "PrecipRate_00.00"
 RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
-# --- APP LAYOUT ---
+# --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
 
-# --- PROTOTYPE WARNING BANNER ---
-st.warning("⚠️ **CAUTION:** This tool is an experimental prototype currently in progress (similar to C3P0 in The Phantom Menace) and will GUARANTEE NO QUESTIONS ASKED FAIL, EVEN NOW, THIS MINUTE!")
+st.html("""
+    <style>
+        /* Eliminate master block container top padding */
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+            max-width: 98% !important;
+        }
+        /* Tighten margins on elements to pull content upward */
+        h1, h2, h3, h4 {
+            margin-top: 0.2rem !important;
+            margin-bottom: 0.2rem !important;
+            padding-top: 0px !important;
+        }
+        /* Compress generic element spacing blocks */
+        .stElementContainer {
+            margin-bottom: 0.4rem !important;
+        }
+    </style>
+""")
 
-st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
+# --- CAUTION WARNING BANNER ---
+st.warning("⚠️ **CAUTION:** This tool is an experimental prototype (similar to C3P0 in The Phantom Menace) and will GUARANTEE, NO QUESTIONS ASKED FAIL, EVEN NOW, THIS SECOND!")
 
 # --- AUTOMATED OPERATIONS TIMER ---
 count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
+
+# --- HEADER & TIMESTAMP GRID ---
+# Splitting the top row to push the live data status box into the upper right corner
+header_col, time_col = st.columns([3, 1])
+
+with header_col:
+    st.title("NGP Urban and Small Towns: Flash Flood Decision Support")
+
+with time_col:
+    # Build out timestamps
+    utc_now = datetime.now(timezone.utc)
+    cdt_now = utc_now - timedelta(hours=5)
+    local_time_str = cdt_now.strftime("%I:%M %p cdt").lower()
+    utc_time_str = utc_now.strftime("%H:%M UTC")
+    
+    # Render the alert info container natively aligned to the top right
+    st.info(f"⏳ **Last Scanner Update:** {local_time_str} ({utc_time_str}) | *Cycle: {count}*")
+
+st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
@@ -71,16 +109,6 @@ with col3:
     
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
-
-# --- TIMESTAMP READOUT ---
-utc_now = datetime.now(timezone.utc)
-cdt_now = utc_now - timedelta(hours=5)
-
-local_time_str = cdt_now.strftime("%I:%M %p cdt").lower()
-utc_time_str = utc_now.strftime("%H:%M UTC")
-
-st.info(f"⏳ **Last Scanner Update:** {local_time_str} ({utc_time_str}) | *Auto-Scan ID Cycle: {count}*")
-st.markdown("---")
 
 @st.cache_data
 def get_urban_centers():
@@ -215,7 +243,7 @@ def scan_data(cycle_count):
             if os.path.exists(local_grib): os.remove(local_grib)
     rate_history_files = get_latest_files(fs, RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
-        local_gribs = [extract_file(fs, f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
+        local_gribs = [extract_file(fs, f"rate_{i}") for i, f in enumerate(rate_history_files)]
         try:
             datasets = [xr.open_dataset(g, engine="cfgrib") for g in local_gribs if g]
             if len(datasets) == 3:
