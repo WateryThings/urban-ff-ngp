@@ -87,10 +87,6 @@ urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 urban_shapes_geojson = load_json_layer("urban_boundaries.json")
 
-for feature in urban_shapes_geojson["features"]:
-    feature["properties"]["fill_color"] = [180, 180, 180, 50]   
-    feature["properties"]["line_color"] = [120, 120, 120, 100]  
-
 # --- DATA EXTRACTION & DOWNLOADING ---
 def get_latest_files(fs, product_name, num_files=1):
     path = f"noaa-mrms-pds/CONUS/{product_name}/"
@@ -117,7 +113,9 @@ def extract_file(fs, s3_path, idx_suffix=""):
         return None
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
-def scan_data():
+# NEW FIX: Memory caching tied to the 'count' cycle. Checkboxes no longer trigger fresh downloads!
+@st.cache_data(show_spinner=False)
+def scan_data(cycle_count):
     fs = s3fs.S3FileSystem(anon=True)
     results = {}
     
@@ -179,13 +177,9 @@ def scan_data():
     return results
 
 # --- RENDERING THE MAP LAYERS ---
-st.subheader("Regional CWA Flash Flood Alert Map")
-
 def render_map(cwa_layer, city_shapes, show_radar):
     layers = []
     
-    # MY APOLOGIES: Properly reverted back to BitmapLayer using the IEM WMS engine.
-    # The 'visible' property allows zoom-locking to work flawlessly!
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:4326&bbox=-110,40,-90,52&width=1200&height=800&format=image/png&transparent=true",
@@ -214,31 +208,34 @@ def render_map(cwa_layer, city_shapes, show_radar):
         map_style="light", tooltip={"text": "{name}"}
     )
 
-map_placeholder = st.empty()
-map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
-
+# --- EXECUTE SCANNER & MAP LOGIC ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    alert_results = scan_data()
+    # Scanner utilizes cache based on the auto-timer cycle count
+    alert_results = scan_data(count)
     
+# Process the baseline colors
+for feature in urban_shapes_geojson["features"]:
+    feature["properties"]["fill_color"] = [180, 180, 180, 50]
+    feature["properties"]["line_color"] = [120, 120, 120, 100]
+    
+if alert_results:
+    alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
     for feature in urban_shapes_geojson["features"]:
-        feature["properties"]["fill_color"] = [180, 180, 180, 50]
-        feature["properties"]["line_color"] = [120, 120, 120, 100]
-        
-    if alert_results:
-        st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-        alerted_towns = [key.split(",")[0].strip().upper() for key in alert_results.keys()]
-        
-        for feature in urban_shapes_geojson["features"]:
-            feat_name = str(feature["properties"]["name"]).upper()
-            if any(town in feat_name for town in alerted_towns):
-                feature["properties"]["fill_color"] = [255, 0, 0, 180]  
-                feature["properties"]["line_color"] = [150, 0, 0, 255]  
-        
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
-        st.json(alert_results)
-    else:
-        st.success("✅ All systems normal. No multi-product severe hazards detected across operational domains.")
-        map_placeholder.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
+        feat_name = str(feature["properties"]["name"]).upper()
+        if any(town in feat_name for town in alerted_towns):
+            feature["properties"]["fill_color"] = [255, 0, 0, 180]  
+            feature["properties"]["line_color"] = [150, 0, 0, 255]  
+
+# NEW FIX: The map renders exactly ONE time here. The camera stays perfectly locked!
+st.subheader("Regional CWA Flash Flood Alert Map")
+st.pydeck_chart(render_map(cwa_geojson, urban_shapes_geojson, toggle_radar))
+
+# Process text output underneath the locked map
+if alert_results:
+    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
+    st.json(alert_results)
+else:
+    st.success("✅ All systems normal. No multi-product severe hazards detected across operational domains.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
