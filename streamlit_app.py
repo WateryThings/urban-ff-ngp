@@ -99,7 +99,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
+    * **Light Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 10 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -200,6 +200,13 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
 # Load databases
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
+
+# Process the new CWA GeoJSON to add dynamic WFO hover tooltips
+for feat in cwa_geojson.get("features", []):
+    wfo_id = feat.get("properties", {}).get("WFO", "Unknown")
+    feat["properties"]["name"] = f"NWS WFO {wfo_id}"
+    feat["properties"]["hover_info"] = "County Warning Area Boundary"
+
 raw_urban_boundaries = load_json_layer("urban_boundaries.json")
 
 # Generate the hybrid polygon map featuring all 1,146 locations
@@ -590,10 +597,10 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(radar_layer)
 
-    # 1. Existing Outer CWA Perimeter (Thick border)
+    # 1. CWA Perimeters (Light Blue border)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=4,
-        get_line_color=[25, 25, 112, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=3
+        get_line_color=[135, 206, 250, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=3, pickable=True
     )
     layers.append(outline_layer)
 
