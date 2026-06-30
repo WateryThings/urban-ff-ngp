@@ -203,7 +203,6 @@ def get_nws_warnings():
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
     try:
-        # High-Speed Optimization: Added timeout to prevent app hangs
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
@@ -244,7 +243,6 @@ def get_lsrs():
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
     try:
-        # High-Speed Optimization: Added timeout to prevent app hangs
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
@@ -326,7 +324,6 @@ def scan_data(cycle_count, towns_df):
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
     
     master_lat_box = [41.5, 50.0]
-    master_lon_slice = slice(360 - 107.0, 360 - 93.5)
     now_utc = datetime.now(timezone.utc)
     
     # --- SCAN CORE PRODUCTS BLOCK ---
@@ -361,17 +358,25 @@ def scan_data(cycle_count, towns_df):
             ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
             var_name = list(ds.data_vars)[0]
             
+            # Universal Coordinate Detection: Safely handle 0-360 vs -180/180
+            is_360 = bool(np.max(ds.longitude.values) > 180)
+            target_min_lon = (360 - 107.0) if is_360 else -107.0
+            target_max_lon = (360 - 93.5) if is_360 else -93.5
+            master_lon_slice = slice(target_min_lon, target_max_lon)
+            
             lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
             master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
             
             ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
             
-            # --- HIGH-SPEED OPTIMIZATION & DIMENSION FIX ---
             lats_arr = ds_cropped.latitude.values
             lons_arr = ds_cropped.longitude.values
-            # FIX 1: .squeeze() forces the array to drop invisible dimensions like 'time' or 'step'
-            # guaranteeing a pure 2D (latitude, longitude) matrix for perfectly accurate location slicing
-            data_arr = ds_cropped[var_name].squeeze().values
+            
+            # Explicit axis transposition guaranteeing [latitude, longitude] ordering
+            da = ds_cropped[var_name].squeeze()
+            if da.dims != ('latitude', 'longitude'):
+                da = da.transpose('latitude', 'longitude')
+            data_arr = da.values
             
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
@@ -383,18 +388,28 @@ def scan_data(cycle_count, towns_df):
                 true_min_lon = min(c_min_lon, c_max_lon)
                 true_max_lon = max(c_min_lon, c_max_lon)
                 
-                # Extract indices overlapping the city bounds
-                lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
-                lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
+                c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
+                c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
                 
-                # FIX 2: If a town is microscopic (sub-1km), strictly snap to the exact MRMS pixel overhead
+                # Buffer pad of 0.015 deg (~1 mile) prevents microscopic polygons from slipping between MRMS grid nodes
+                pad = 0.015
+                
+                lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat) - pad) & (lats_arr <= max(c_min_lat, c_max_lat) + pad))[0]
+                lon_idx = np.where((lons_arr >= c_target_min_lon - pad) & (lons_arr <= c_target_max_lon + pad))[0]
+                
+                # Centroid fallback guarantees we snap to the town center if it falls completely between 1km pixels
                 if len(lat_idx) == 0:
-                    lat_idx = [np.argmin(np.abs(lats_arr - min(c_min_lat, c_max_lat)))]
+                    center_lat = (c_min_lat + c_max_lat) / 2.0
+                    lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
                 if len(lon_idx) == 0:
-                    lon_idx = [np.argmin(np.abs(lons_arr - (true_min_lon % 360)))]
+                    center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
+                    lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
                 
                 if len(lat_idx) > 0 and len(lon_idx) > 0:
-                    slice_data = data_arr[np.min(lat_idx):np.max(lat_idx)+1, np.min(lon_idx):np.max(lon_idx)+1]
+                    min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
+                    min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
+                    
+                    slice_data = data_arr[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
                     val = np.nanmax(slice_data) if slice_data.size > 0 else np.nan
                 else:
                     val = np.nan
@@ -451,20 +466,34 @@ def scan_data(cycle_count, towns_df):
                 datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
                 
                 if len(datasets) == 3:
+                    is_360 = bool(np.max(datasets[0].longitude.values) > 180)
+                    target_min_lon = (360 - 107.0) if is_360 else -107.0
+                    target_max_lon = (360 - 93.5) if is_360 else -93.5
+                    master_lon_slice = slice(target_min_lon, target_max_lon)
+                    
                     lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
                     master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
                     
                     cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
                     var_names = [list(d.data_vars)[0] for d in cropped_ds]
                     
-                    # --- HIGH-SPEED OPTIMIZATION: Extract to raw Numpy Matrices ---
                     lats_arr = cropped_ds[0].latitude.values
                     lons_arr = cropped_ds[0].longitude.values
                     
-                    # Ensure perfectly flat 2D arrays
-                    data_arr_0 = cropped_ds[0][var_names[0]].squeeze().values
-                    data_arr_1 = cropped_ds[1][var_names[1]].squeeze().values
-                    data_arr_2 = cropped_ds[2][var_names[2]].squeeze().values
+                    # Ensure perfectly transposed [lat, lon] arrays
+                    da0 = cropped_ds[0][var_names[0]].squeeze()
+                    if da0.dims != ('latitude', 'longitude'): da0 = da0.transpose('latitude', 'longitude')
+                    data_arr_0 = da0.values
+                    
+                    da1 = cropped_ds[1][var_names[1]].squeeze()
+                    if da1.dims != ('latitude', 'longitude'): da1 = da1.transpose('latitude', 'longitude')
+                    data_arr_1 = da1.values
+                    
+                    da2 = cropped_ds[2][var_names[2]].squeeze()
+                    if da2.dims != ('latitude', 'longitude'): da2 = da2.transpose('latitude', 'longitude')
+                    data_arr_2 = da2.values
+                    
+                    pad = 0.015
                     
                     for _, row in towns_df.iterrows():
                         key = f"{row['name']}, {row['state']}"
@@ -476,15 +505,18 @@ def scan_data(cycle_count, towns_df):
                         true_min_lon = min(c_min_lon, c_max_lon)
                         true_max_lon = max(c_min_lon, c_max_lon)
                         
-                        # Instant raw array indexing
-                        lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
-                        lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
+                        c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
+                        c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
                         
-                        # Snap to exact overhead pixel if polygon is too small
+                        lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat) - pad) & (lats_arr <= max(c_min_lat, c_max_lat) + pad))[0]
+                        lon_idx = np.where((lons_arr >= c_target_min_lon - pad) & (lons_arr <= c_target_max_lon + pad))[0]
+                        
                         if len(lat_idx) == 0:
-                            lat_idx = [np.argmin(np.abs(lats_arr - min(c_min_lat, c_max_lat)))]
+                            center_lat = (c_min_lat + c_max_lat) / 2.0
+                            lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
                         if len(lon_idx) == 0:
-                            lon_idx = [np.argmin(np.abs(lons_arr - (true_min_lon % 360)))]
+                            center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
+                            lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
                         
                         if len(lat_idx) > 0 and len(lon_idx) > 0:
                             min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
