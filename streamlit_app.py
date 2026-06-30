@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        😁 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID WITH CAUTION. DO NOT ENGAGE. CRASH IMMINENT. 
+        😖 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID WITH CAUTION. DO NOT ENGAGE. CRASH IMMINENT. 
     </div>
 """)
 
@@ -78,7 +78,7 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **all 3** product thresholds are met within the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **all 3** product thresholds are met strictly within the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
@@ -102,11 +102,11 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
+    toggle_radar = st.checkbox("Overlay MRMS Instantaneous Reflectivity", value=False, help="Toggles live MRMS Seamless Hybrid Scan Reflectivity (the instantaneous rate proxy) over the map area.")
     radar_opacity = st.slider(
-        "Radar Opacity", 
+        "MRMS Opacity", 
         min_value=0.0, max_value=1.0, value=0.55, step=0.05,
-        help="Adjust the transparency of the Base Reflectivity overlay layer."
+        help="Adjust the transparency of the MRMS overlay layer."
     )
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
@@ -519,7 +519,7 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     layers = []
     radar_layer = pdk.Layer(
         "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/us/mrms.cgi?service=WMS&request=GetMap&version=1.1.1&layers=mrms_bref&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
         opacity=radar_opacity_val, visible=show_radar
     )
