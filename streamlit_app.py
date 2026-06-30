@@ -113,7 +113,7 @@ with col3:
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
 
 
-# --- DATABASE LOADING ---
+# --- DATABASE LOADING (HIGH-SPEED ZERO-ARGUMENT CACHING) ---
 @st.cache_data
 def get_urban_centers():
     df = pd.read_csv("urban_centers.csv")
@@ -124,14 +124,11 @@ def get_urban_centers():
     df = df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat']).copy()
     
     # --- THE BOUNDING BOX FIX ---
-    # Crush the massive 100-sq-mile Overpass buffers down to strict city limits (1-mile radius)
     center_lat = (df['min_lat'] + df['max_lat']) / 2.0
     center_lon = (df['min_lon'] + df['max_lon']) / 2.0
     
-    # Detect any boundary bigger than ~3 miles across
     oversized = (df['max_lat'] - df['min_lat']) > 0.04
     
-    # Force them into a highly accurate 1-mile box to perfectly match MRMS pixels
     df.loc[oversized, 'min_lat'] = center_lat[oversized] - 0.014
     df.loc[oversized, 'max_lat'] = center_lat[oversized] + 0.014
     df.loc[oversized, 'min_lon'] = center_lon[oversized] - 0.020
@@ -139,7 +136,7 @@ def get_urban_centers():
     
     return df
 
-# FIX: Removed the @st.cache_data decorator so Streamlit stops holding onto the old, melted JSON file!
+@st.cache_data
 def load_json_layer(filepath):
     try:
         with open(filepath, "r") as f:
@@ -148,11 +145,22 @@ def load_json_layer(filepath):
         return {"type": "FeatureCollection", "features": []}
 
 @st.cache_data
-def generate_hybrid_urban_shapes(csv_df, existing_geojson):
-    """
-    Loads detailed large city boundaries from JSON, then injects 
-    custom rectangular boundaries for all missing small towns from the CSV.
-    """
+def get_processed_cwa_layer():
+    """Loads and formats the CWA layer exactly once, saving critical render time."""
+    cwa_geojson = load_json_layer("cwa_outlines.json")
+    cwa_copy = copy.deepcopy(cwa_geojson)
+    for feat in cwa_copy.get("features", []):
+        wfo_id = feat.get("properties", {}).get("WFO", "Unknown")
+        feat["properties"]["name"] = wfo_id
+        feat["properties"]["hover_info"] = ""
+    return cwa_copy
+
+@st.cache_data
+def get_hybrid_urban_shapes():
+    """Generates the baseline urban shapes map without relying on hashed arguments."""
+    csv_df = get_urban_centers()
+    existing_geojson = load_json_layer("urban_boundaries.json")
+    
     combined_geojson = copy.deepcopy(existing_geojson)
     existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in combined_geojson.get("features", [])]
     
@@ -192,22 +200,6 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
         feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
         
     return combined_geojson
-
-
-# Load databases
-urban_gdf = get_urban_centers()
-cwa_geojson = load_json_layer("cwa_outlines.json")
-
-# Process the new CWA GeoJSON to add dynamic WFO hover tooltips
-for feat in cwa_geojson.get("features", []):
-    wfo_id = feat.get("properties", {}).get("WFO", "Unknown")
-    feat["properties"]["name"] = wfo_id
-    feat["properties"]["hover_info"] = ""
-
-raw_urban_boundaries = load_json_layer("urban_boundaries.json")
-
-# Generate the hybrid polygon map featuring all 1,146 locations
-urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
 
 
 # --- NWS WARNINGS ENGINE ---
@@ -325,7 +317,8 @@ def extract_file(s3_path, idx_suffix=""):
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
-def scan_data(cycle_count, towns_df):
+def scan_data(cycle_count):
+    towns_df = get_urban_centers()
     results = {}
     logs = []
     feed_health = {
@@ -451,8 +444,6 @@ def scan_data(cycle_count, towns_df):
             feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
-    st.session_state['pipeline_diagnostic_logs'] = logs
-
     # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 3 OUT OF 3 METRICS
     for town_key, data in town_tallies.items():
         if data["score"] >= 3:
@@ -519,7 +510,7 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
 # --- EXECUTE CORE SCANS ---
 with st.spinner("Analyzing current regional CWA footprints..."):
-    active_alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
+    active_alert_results, pipeline_logs, feed_health = scan_data(count)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
@@ -563,6 +554,10 @@ st.session_state['feed_health'] = feed_health
 # Map the active alerts to the GeoJSON polygon layer 
 upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
 
+# Fetch baseline map polygons dynamically out of Cache memory to prevent lagging
+cwa_geojson = get_processed_cwa_layer()
+urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
+
 for feature in urban_shapes_geojson["features"]:
     feat_name = str(feature["properties"].get("name", "")).strip().upper()
     
@@ -576,11 +571,6 @@ for feature in urban_shapes_geojson["features"]:
             feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 10-Min Drainage Cooldown Active"
         else:
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3 HAZARD THRESHOLDS EXCEEDED"
-    else:
-        # Re-apply base state in case the map re-renders after an alert expires
-        feature["properties"]["fill_color"] = [100, 100, 100, 160]     
-        feature["properties"]["line_color"] = [70, 70, 70, 200]     
-        feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
