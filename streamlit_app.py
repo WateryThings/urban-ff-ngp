@@ -122,6 +122,11 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     df = df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat']).copy()
     
+    # Clean leading/trailing spaces and drop duplicates to prevent duplicate enclaves or ghost fallback rendering
+    df['name'] = df['name'].astype(str).str.strip()
+    df['state'] = df['state'].astype(str).str.strip()
+    df = df.drop_duplicates(subset=['name', 'state']).copy()
+    
     # --- THE BOUNDING BOX FIX ---
     center_lat = (df['min_lat'] + df['max_lat']) / 2.0
     center_lon = (df['min_lon'] + df['max_lon']) / 2.0
@@ -189,20 +194,41 @@ def get_hybrid_urban_shapes():
     combined_geojson = copy.deepcopy(existing_geojson)
     existing_features = combined_geojson.get("features", [])
     
-    # ON-THE-FLY RECONCILIATION: Map state suffixes onto imported GeoJSON features to enable flashing and eliminate fallbacks
+    cleaned_features = []
+    seen_names = set()
+    
+    # ON-THE-FLY RECONCILIATION & SANITIZATION:
+    # Map state suffixes and strip trailing spaces to enable flashing and eliminate duplicate shapes
     for feature in existing_features:
-        feat_name = str(feature["properties"].get("name", "")).strip().upper()
-        match = csv_df[csv_df['name'].str.strip().str.upper() == feat_name]
+        feat_name = str(feature["properties"].get("name", "")).strip()
+        if not feat_name:
+            continue
+            
+        match = csv_df[csv_df['name'].str.upper() == feat_name.upper()]
         if not match.empty:
             state = match.iloc[0]['state']
-            feature["properties"]["name"] = f"{feature['properties']['name']}, {state}"
+            full_name = f"{feat_name}, {state}"
+        else:
+            full_name = feat_name
 
-    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in existing_features]
+        full_name_upper = full_name.upper()
+        if full_name_upper in seen_names:
+            continue  # Vaporizes any duplicate geometric slices in the GeoJSON layer
+        seen_names.add(full_name_upper)
+        
+        feature["properties"]["name"] = full_name
+        cleaned_features.append(feature)
+        
+    combined_geojson["features"] = cleaned_features
+    existing_names = list(seen_names)
     
     for _, row in csv_df.iterrows():
-        town_name = f"{row['name']}, {row['state']}".strip().upper()
+        town_name = f"{row['name']}, {row['state']}".strip()
+        town_name_upper = town_name.upper()
         
-        if town_name not in existing_names:
+        if town_name_upper not in existing_names:
+            existing_names.append(town_name_upper)
+            
             min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
             max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
             
@@ -214,7 +240,7 @@ def get_hybrid_urban_shapes():
             feature = {
                 "type": "Feature",
                 "properties": {
-                    "name": f"{row['name']}, {row['state']}"
+                    "name": town_name
                 },
                 "geometry": {
                     "type": "Polygon",
