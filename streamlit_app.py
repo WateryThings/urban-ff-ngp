@@ -189,22 +189,22 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
 
 # --- INTERNAL WFO BOUNDARY ENGINE ---
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_wfo_boundaries():
+def load_internal_wfo_boundaries():
     """Fetches exact internal boundaries & calculates label centroids for the 5 NGP WFOs."""
     url = "https://mesonet.agron.iastate.edu/geojson/cwa.geojson"
-    req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
-    ngp_wfos = ["FGF", "BIS", "UNR", "ABR", "FSD"]
+    # User-Agent spoofing prevents 403 Forbidden blocks from weather servers
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    ngp_wfos = ["FGF", "BIS", "UNR", "RAP", "ABR", "FSD"] # RAP added as fallback for Rapid City
     filtered_features = []
     labels = []
     try:
-        # High-Speed Optimization: Added timeout to prevent app hangs
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 props = feature.get("properties", {})
                 
                 # Check for multiple possible property names in the API JSON
-                wfo = str(props.get("cwa", props.get("CWA", props.get("WFO", "")))).upper()
+                wfo = str(props.get("WFO", props.get("CWA", props.get("cwa", "")))).upper()
                 
                 if wfo in ngp_wfos:
                     feature["properties"]["name"] = f"NWS WFO {wfo}"
@@ -221,17 +221,19 @@ def get_wfo_boundaries():
                             for ring in poly: flat_coords.extend(ring)
                             
                     if flat_coords:
-                        lons = [c[0] for c in flat_coords]
-                        lats = [c[1] for c in flat_coords]
-                        center_lon = (min(lons) + max(lons)) / 2.0
-                        center_lat = (min(lats) + max(lats)) / 2.0
-                        labels.append({
-                            "wfo": wfo,
-                            "coordinates": [center_lon, center_lat]
-                        })
+                        lons = [c[0] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
+                        lats = [c[1] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
+                        if lons and lats:
+                            center_lon = (min(lons) + max(lons)) / 2.0
+                            center_lat = (min(lats) + max(lats)) / 2.0
+                            labels.append({
+                                "wfo": wfo,
+                                "coordinates": [center_lon, center_lat]
+                            })
                         
             return {"type": "FeatureCollection", "features": filtered_features}, labels
-    except Exception:
+    except Exception as e:
+        print(f"WFO Boundary Fetch Failed: {e}")
         return {"type": "FeatureCollection", "features": []}, []
 
 
@@ -239,7 +241,7 @@ def get_wfo_boundaries():
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 raw_urban_boundaries = load_json_layer("urban_boundaries.json")
-wfo_geojson, wfo_label_data = get_wfo_boundaries()
+wfo_geojson, wfo_label_data = load_internal_wfo_boundaries()
 
 # Generate the hybrid polygon map featuring all 1,146 locations
 urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
@@ -582,26 +584,30 @@ def render_map(cwa_layer, wfo_features, wfo_labels, city_shapes, show_radar, rad
     layers.append(outline_layer)
 
     # 2. Internal WFO Regions (Thinner, Pickable for Tooltips)
-    wfo_layer = pdk.Layer(
-        "GeoJsonLayer", wfo_features, stroke_width=3,
-        get_line_color=[25, 25, 112, 255], get_fill_color=[0, 0, 0, 0], 
-        line_width_min_pixels=2, pickable=True
-    )
-    layers.append(wfo_layer)
+    if wfo_features.get("features"):
+        wfo_layer = pdk.Layer(
+            "GeoJsonLayer", wfo_features, 
+            stroked=True, filled=False,
+            get_line_color=[25, 25, 112, 255], 
+            get_line_width=2500,  # Physical map width in meters (prevents invisible 1-pixel bugs)
+            line_width_min_pixels=2, pickable=True
+        )
+        layers.append(wfo_layer)
     
     # 3. WFO Centroid Text Labels
-    wfo_text_layer = pdk.Layer(
-        "TextLayer",
-        data=wfo_labels,
-        get_position="coordinates",
-        get_text="wfo",
-        get_size=20,
-        get_color=[25, 25, 112, 255],
-        get_alignment_baseline="'center'",
-        font_weight="bold",
-        font_family="Helvetica, Arial, sans-serif"
-    )
-    layers.append(wfo_text_layer)
+    if wfo_labels:
+        wfo_text_layer = pdk.Layer(
+            "TextLayer",
+            data=wfo_labels,
+            get_position="coordinates",
+            get_text="wfo",
+            get_size=20,
+            get_color=[25, 25, 112, 255],
+            get_alignment_baseline="'center'",
+            font_weight="bold",
+            font_family="Helvetica, Arial, sans-serif"
+        )
+        layers.append(wfo_text_layer)
     
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
