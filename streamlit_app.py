@@ -187,7 +187,17 @@ def get_hybrid_urban_shapes():
     existing_geojson = load_json_layer("urban_boundaries.json")
     
     combined_geojson = copy.deepcopy(existing_geojson)
-    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in combined_geojson.get("features", [])]
+    existing_features = combined_geojson.get("features", [])
+    
+    # ON-THE-FLY RECONCILIATION: Map state suffixes onto imported GeoJSON features to enable flashing and eliminate fallbacks
+    for feature in existing_features:
+        feat_name = str(feature["properties"].get("name", "")).strip().upper()
+        match = csv_df[csv_df['name'].str.strip().str.upper() == feat_name]
+        if not match.empty:
+            state = match.iloc[0]['state']
+            feature["properties"]["name"] = f"{feature['properties']['name']}, {state}"
+
+    existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in existing_features]
     
     for _, row in csv_df.iterrows():
         town_name = f"{row['name']}, {row['state']}".strip().upper()
