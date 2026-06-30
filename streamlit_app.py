@@ -597,6 +597,17 @@ for town_key, data in active_alert_results.items():
     # 3. Append time series data
     if town_key in alert_results:
         series_pt = {"Time": current_time_str, **data.get("Raw", {})}
+        
+        # Safety Catch: Ensure the dict and 'series' array exist for this town from older sessions
+        if town_key not in st.session_state['alert_history']:
+            st.session_state['alert_history'][town_key] = {
+                "time": current_utc_time,
+                "data": data,
+                "series": []
+            }
+        elif "series" not in st.session_state['alert_history'][town_key]:
+            st.session_state['alert_history'][town_key]["series"] = []
+            
         st.session_state['alert_history'][town_key]["series"].append(series_pt)
 
 # Ensure anything no longer in alert_results gets wiped
