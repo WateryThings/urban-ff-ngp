@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        😖 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID WITH CAUTION. DO NOT ENGAGE. CRASH IMMINENT. 
+        😖 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID EYE CONTACT. DO NOT ENGAGE. CRASH IMMINENT. 
     </div>
 """)
 
@@ -626,8 +626,8 @@ st.markdown("##### 🌱 Live Data Feed Health")
 health_cols = st.columns(3)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
-    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
-    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
+    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Unit Streamflow"
 }
 for i, (prod, name) in enumerate(friendly_names.items()):
     status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
