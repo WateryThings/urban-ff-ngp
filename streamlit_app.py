@@ -58,8 +58,8 @@ st.html("""
     </div>
 """)
 
-# --- AUTOMATED OPERATIONS TIMER ---
-count = st_autorefresh(interval=120000, limit=None, key="mrms_auto_scanner")
+# --- AUTOMATED OPERATIONS TIMER (UPDATED TO 5-MINUTES FOR OPTIMAL SPEED) ---
+count = st_autorefresh(interval=300000, limit=None, key="mrms_auto_scanner")
 
 # --- HEADER & TIMESTAMP GRID ---
 header_col, time_col = st.columns([3, 1])
@@ -97,7 +97,7 @@ with col2:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
-    * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
+    * **Automated Refresh:** Updates every 5-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
 
 with col3:
