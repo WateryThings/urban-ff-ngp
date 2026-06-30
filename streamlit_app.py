@@ -201,7 +201,11 @@ def get_wfo_boundaries():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                wfo = feature["properties"].get("WFO", "")
+                props = feature.get("properties", {})
+                
+                # Check for multiple possible property names in the API JSON
+                wfo = str(props.get("cwa", props.get("CWA", props.get("WFO", "")))).upper()
+                
                 if wfo in ngp_wfos:
                     feature["properties"]["name"] = f"NWS WFO {wfo}"
                     feature["properties"]["hover_info"] = "Internal County Warning Area Boundary"
@@ -579,9 +583,9 @@ def render_map(cwa_layer, wfo_features, wfo_labels, city_shapes, show_radar, rad
 
     # 2. Internal WFO Regions (Thinner, Pickable for Tooltips)
     wfo_layer = pdk.Layer(
-        "GeoJsonLayer", wfo_features, stroke_width=2,
-        get_line_color=[25, 25, 112, 180], get_fill_color=[0, 0, 0, 0], 
-        line_width_min_pixels=1, pickable=True
+        "GeoJsonLayer", wfo_features, stroke_width=3,
+        get_line_color=[25, 25, 112, 255], get_fill_color=[0, 0, 0, 0], 
+        line_width_min_pixels=2, pickable=True
     )
     layers.append(wfo_layer)
     
@@ -726,10 +730,4 @@ with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=
         st.write("Initializing connections to NOAA data feeds...")
 
 if alert_results:
-    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-    st.json(alert_results)
-else:
-    st.success("✅ No urban hydro hazards detected - at ease soldier.")
-
-if st.button("Refresh & Scan"):
-    st.rerun()
+    st.error("🚨 THRESHOLDS EXCEEDED
