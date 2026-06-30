@@ -315,7 +315,7 @@ def extract_file(s3_path, idx_suffix=""):
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
-def scan_data(cycle_count, towns_df, tracked_towns):
+def scan_data(cycle_count, towns_df):
     results = {}
     logs = []
     feed_health = {
@@ -325,11 +325,7 @@ def scan_data(cycle_count, towns_df, tracked_towns):
         "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "🔴 Offline"
     }
     
-    town_tallies = {f"{row['name']}, {row['state']}": {
-        "score": 0, 
-        "details": [],
-        "raw": {"QPE (in)": 0.0, "Rain Rate (in/hr)": 0.0, "CREST (cfs/sq mi)": 0, "HP (cfs/sq mi)": 0}
-    } for _, row in towns_df.iterrows()}
+    town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
     
     master_lat_box = [41.5, 50.0]
     master_lon_slice = slice(360 - 107.0, 360 - 93.5)
@@ -383,25 +379,18 @@ def scan_data(cycle_count, towns_df, tracked_towns):
                 slice_data = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name]
                 val = slice_data.max().values if slice_data.size > 0 else np.nan
                 
-                if pd.notna(val):
+                if pd.notna(val) and val >= threshold:
+                    town_tallies[key]["score"] += 1
+                    
                     if product == "RadarOnly_QPE_01H_00.00":
                         v_in = float(val / 25.4)
-                        town_tallies[key]["raw"]["QPE (in)"] = v_in
-                        if val >= threshold:
-                            town_tallies[key]["score"] += 1
-                            town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
+                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
                     elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
                         v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["raw"]["CREST (cfs/sq mi)"] = v_cfs
-                        if val >= threshold:
-                            town_tallies[key]["score"] += 1
-                            town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
+                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
                     elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
                         v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["raw"]["HP (cfs/sq mi)"] = v_cfs
-                        if val >= threshold:
-                            town_tallies[key]["score"] += 1
-                            town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
+                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
                         
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
@@ -464,10 +453,6 @@ def scan_data(cycle_count, towns_df, tracked_towns):
                     v2 = slice2.max().values if slice2.size > 0 else np.nan
                     v3 = slice3.max().values if slice3.size > 0 else np.nan
                     
-                    if pd.notna(v3):
-                        pk_hr_raw = float(v3 / 25.4)
-                        town_tallies[key]["raw"]["Rain Rate (in/hr)"] = pk_hr_raw
-
                     if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                         if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
                             town_tallies[key]["score"] += 1
@@ -491,11 +476,10 @@ def scan_data(cycle_count, towns_df, tracked_towns):
 
     # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 3 OUT OF 4 METRICS
     for town_key, data in town_tallies.items():
-        if data["score"] >= 3 or town_key in tracked_towns:
+        if data["score"] >= 3:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 4 Metrics Broken",
-                "Trigger Details": data["details"],
-                "Raw": data["raw"]
+                "Trigger Details": data["details"]
             }
     return results, logs, feed_health
 
@@ -549,76 +533,44 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
 
 # --- EXECUTE CORE SCANS ---
-if 'alert_history' not in st.session_state:
-    st.session_state['alert_history'] = {}
-
-tracked_towns = list(st.session_state['alert_history'].keys())
-
 with st.spinner("Analyzing current regional CWA footprints..."):
-    active_alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf, tracked_towns)
+    active_alert_results, pipeline_logs, feed_health = scan_data(count, urban_gdf)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# --- 30-MINUTE IMPACT COOLDOWN LOGIC & TIME SERIES ---
+# --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
+if 'alert_history' not in st.session_state:
+    st.session_state['alert_history'] = {}
+
 current_utc_time = datetime.now(timezone.utc)
-current_time_str = current_utc_time.strftime("%H:%M UTC")
 alert_results = {}
-keys_to_remove = []
 
 # 1. Update memory history with newly triggered active alerts
 for town_key, data in active_alert_results.items():
-    score_str = data.get("Consensus Score", "0")
-    is_active = False
-    if score_str[0].isdigit():
-        is_active = int(score_str.split()[0]) >= 3
-        
-    if is_active:
-        if town_key not in st.session_state['alert_history']:
-            st.session_state['alert_history'][town_key] = {
-                "time": current_utc_time,
-                "data": data,
-                "series": []
-            }
-        st.session_state['alert_history'][town_key]["time"] = current_utc_time
-        st.session_state['alert_history'][town_key]["data"] = data
-        alert_results[town_key] = data
-    else:
-        # 2. Check history for towns resting in the cooldown window
-        if town_key in st.session_state['alert_history']:
-            hist = st.session_state['alert_history'][town_key]
-            time_since_trigger = current_utc_time - hist["time"]
-            if time_since_trigger <= timedelta(minutes=30):
-                cooldown_data = data.copy()
-                cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
-                alert_results[town_key] = cooldown_data
-            else:
-                keys_to_remove.append(town_key)
+    st.session_state['alert_history'][town_key] = {
+        "time": current_utc_time,
+        "data": data
+    }
+    alert_results[town_key] = data
 
-    # 3. Append time series data
-    if town_key in alert_results:
-        series_pt = {"Time": current_time_str, **data.get("Raw", {})}
-        
-        # Safety Catch: Ensure the dict and 'series' array exist for this town from older sessions
-        if town_key not in st.session_state['alert_history']:
-            st.session_state['alert_history'][town_key] = {
-                "time": current_utc_time,
-                "data": data,
-                "series": []
-            }
-        elif "series" not in st.session_state['alert_history'][town_key]:
-            st.session_state['alert_history'][town_key]["series"] = []
-            
-        st.session_state['alert_history'][town_key]["series"].append(series_pt)
+# 2. Check history for towns resting in the cooldown window
+keys_to_remove = []
+# Ensure stable iteration over dictionary items
+for town_key, hist in list(st.session_state['alert_history'].items()):
+    if town_key not in active_alert_results:
+        time_since_trigger = current_utc_time - hist["time"]
+        if time_since_trigger <= timedelta(minutes=30):
+            # Town is in the 30-minute cooldown window
+            cooldown_data = hist["data"].copy()
+            cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
+            alert_results[town_key] = cooldown_data
+        else:
+            # Cooldown completely expired
+            keys_to_remove.append(town_key)
 
-# Ensure anything no longer in alert_results gets wiped
-for k in st.session_state['alert_history'].keys():
-    if k not in alert_results and k not in keys_to_remove:
-        keys_to_remove.append(k)
-
-# Clean up expired alerts from background memory
-for k in set(keys_to_remove):
-    if k in st.session_state['alert_history']:
-        del st.session_state['alert_history'][k]
+# 3. Clean up expired alerts from background memory
+for k in keys_to_remove:
+    del st.session_state['alert_history'][k]
 
 st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
 st.session_state['feed_health'] = feed_health
@@ -646,28 +598,6 @@ for feature in urban_shapes_geojson["features"]:
         feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
-
-# --- TIME SERIES VIEWER DASHBOARD ---
-if alert_results:
-    st.markdown("### 📈 Active Alert Time Series Viewer")
-    st.markdown("Select a highlighted town to view the live meteorological decay of the threat over upcoming scans.")
-    selected_town = st.selectbox("Target Area:", list(alert_results.keys()))
-    
-    if selected_town and selected_town in st.session_state['alert_history']:
-        series_data = st.session_state['alert_history'][selected_town]["series"]
-        if len(series_data) > 0:
-            df = pd.DataFrame(series_data).set_index("Time")
-            colA, colB = st.columns(2)
-            with colA:
-                st.markdown("**🌧️ Precipitation (Inches)**")
-                st.line_chart(df[["QPE (in)", "Rain Rate (in/hr)"]])
-            with colB:
-                st.markdown("**🌊 Streamflow (cfs/sq mi)**")
-                st.line_chart(df[["CREST (cfs/sq mi)", "HP (cfs/sq mi)"]])
-            
-            if len(series_data) == 1:
-                st.caption("*Time series is building... keep the app open to track the meteorological decay across upcoming scan cycles.*")
-    st.markdown("---")
 
 # --- NEW: DATA FEED HEALTH DASHBOARD ---
 st.markdown("##### 🌱 Live Data Feed Health")
