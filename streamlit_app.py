@@ -124,7 +124,23 @@ def get_urban_centers():
     df['max_lon'] = pd.to_numeric(df['max_lon'], errors='coerce')
     df['min_lat'] = pd.to_numeric(df['min_lat'], errors='coerce')
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
-    return df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat'])
+    df = df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat']).copy()
+    
+    # --- THE BOUNDING BOX FIX ---
+    # Crush the massive 100-sq-mile Overpass buffers down to strict city limits (1-mile radius)
+    center_lat = (df['min_lat'] + df['max_lat']) / 2.0
+    center_lon = (df['min_lon'] + df['max_lon']) / 2.0
+    
+    # Detect any boundary bigger than ~3 miles across
+    oversized = (df['max_lat'] - df['min_lat']) > 0.04
+    
+    # Force them into a highly accurate 1-mile box to perfectly match MRMS pixels
+    df.loc[oversized, 'min_lat'] = center_lat[oversized] - 0.014
+    df.loc[oversized, 'max_lat'] = center_lat[oversized] + 0.014
+    df.loc[oversized, 'min_lon'] = center_lon[oversized] - 0.020
+    df.loc[oversized, 'max_lon'] = center_lon[oversized] + 0.020
+    
+    return df
 
 @st.cache_data
 def load_json_layer(filepath):
@@ -154,12 +170,6 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
             true_max_lon = max(min_lon_raw, max_lon_raw)
             true_min_lat = min(row['min_lat'], row['max_lat'])
             true_max_lat = max(row['min_lat'], row['max_lat'])
-            
-            if (true_max_lat - true_min_lat > 0.15) or (true_max_lon - true_min_lon > 0.15):
-                center_lat = (true_min_lat + true_max_lat) / 2.0
-                center_lon = (true_min_lon + true_max_lon) / 2.0
-                true_min_lat, true_max_lat = center_lat - 0.02, center_lat + 0.02
-                true_min_lon, true_max_lon = center_lon - 0.02, center_lon + 0.02
             
             feature = {
                 "type": "Feature",
