@@ -99,7 +99,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Blue Lines & Labels:** NWS County Warning Area (CWA) peripheral and internal boundaries, identifying local WFO sectors (FGF, BIS, UNR, ABR, FSD).
+    * **Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -187,61 +187,10 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
     return combined_geojson
 
 
-# --- INTERNAL WFO BOUNDARY ENGINE ---
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_internal_wfo_boundaries():
-    """Fetches exact internal boundaries & calculates label centroids for the 5 NGP WFOs."""
-    url = "https://mesonet.agron.iastate.edu/geojson/cwa.geojson"
-    # User-Agent spoofing prevents 403 Forbidden blocks from weather servers
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    ngp_wfos = ["FGF", "BIS", "UNR", "RAP", "ABR", "FSD"] # RAP added as fallback for Rapid City
-    filtered_features = []
-    labels = []
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode())
-            for feature in data.get("features", []):
-                props = feature.get("properties", {})
-                
-                # Check for multiple possible property names in the API JSON
-                wfo = str(props.get("WFO", props.get("CWA", props.get("cwa", "")))).upper()
-                
-                if wfo in ngp_wfos:
-                    feature["properties"]["name"] = f"NWS WFO {wfo}"
-                    feature["properties"]["hover_info"] = "Internal County Warning Area Boundary"
-                    filtered_features.append(feature)
-                    
-                    geom_type = feature.get("geometry", {}).get("type", "")
-                    coords = feature.get("geometry", {}).get("coordinates", [])
-                    flat_coords = []
-                    if geom_type == "Polygon":
-                        for ring in coords: flat_coords.extend(ring)
-                    elif geom_type == "MultiPolygon":
-                        for poly in coords:
-                            for ring in poly: flat_coords.extend(ring)
-                            
-                    if flat_coords:
-                        lons = [c[0] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
-                        lats = [c[1] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
-                        if lons and lats:
-                            center_lon = (min(lons) + max(lons)) / 2.0
-                            center_lat = (min(lats) + max(lats)) / 2.0
-                            labels.append({
-                                "wfo": wfo,
-                                "coordinates": [center_lon, center_lat]
-                            })
-                        
-            return {"type": "FeatureCollection", "features": filtered_features}, labels
-    except Exception as e:
-        print(f"WFO Boundary Fetch Failed: {e}")
-        return {"type": "FeatureCollection", "features": []}, []
-
-
 # Load databases
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 raw_urban_boundaries = load_json_layer("urban_boundaries.json")
-wfo_geojson, wfo_label_data = load_internal_wfo_boundaries()
 
 # Generate the hybrid polygon map featuring all 1,146 locations
 urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
@@ -417,10 +366,12 @@ def scan_data(cycle_count, towns_df):
             
             ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
             
-            # --- HIGH-SPEED OPTIMIZATION: Extract to raw Numpy Matrices to bypass xarray lag ---
+            # --- HIGH-SPEED OPTIMIZATION & DIMENSION FIX ---
             lats_arr = ds_cropped.latitude.values
             lons_arr = ds_cropped.longitude.values
-            data_arr = ds_cropped[var_name].values
+            # FIX 1: .squeeze() forces the array to drop invisible dimensions like 'time' or 'step'
+            # guaranteeing a pure 2D (latitude, longitude) matrix for perfectly accurate location slicing
+            data_arr = ds_cropped[var_name].squeeze().values
             
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
@@ -432,9 +383,15 @@ def scan_data(cycle_count, towns_df):
                 true_min_lon = min(c_min_lon, c_max_lon)
                 true_max_lon = max(c_min_lon, c_max_lon)
                 
-                # Instant raw array indexing completely eliminates 6,800+ slow .sel() calls
+                # Extract indices overlapping the city bounds
                 lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
                 lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
+                
+                # FIX 2: If a town is microscopic (sub-1km), strictly snap to the exact MRMS pixel overhead
+                if len(lat_idx) == 0:
+                    lat_idx = [np.argmin(np.abs(lats_arr - min(c_min_lat, c_max_lat)))]
+                if len(lon_idx) == 0:
+                    lon_idx = [np.argmin(np.abs(lons_arr - (true_min_lon % 360)))]
                 
                 if len(lat_idx) > 0 and len(lon_idx) > 0:
                     slice_data = data_arr[np.min(lat_idx):np.max(lat_idx)+1, np.min(lon_idx):np.max(lon_idx)+1]
@@ -503,9 +460,11 @@ def scan_data(cycle_count, towns_df):
                     # --- HIGH-SPEED OPTIMIZATION: Extract to raw Numpy Matrices ---
                     lats_arr = cropped_ds[0].latitude.values
                     lons_arr = cropped_ds[0].longitude.values
-                    data_arr_0 = cropped_ds[0][var_names[0]].values
-                    data_arr_1 = cropped_ds[1][var_names[1]].values
-                    data_arr_2 = cropped_ds[2][var_names[2]].values
+                    
+                    # Ensure perfectly flat 2D arrays
+                    data_arr_0 = cropped_ds[0][var_names[0]].squeeze().values
+                    data_arr_1 = cropped_ds[1][var_names[1]].squeeze().values
+                    data_arr_2 = cropped_ds[2][var_names[2]].squeeze().values
                     
                     for _, row in towns_df.iterrows():
                         key = f"{row['name']}, {row['state']}"
@@ -520,6 +479,12 @@ def scan_data(cycle_count, towns_df):
                         # Instant raw array indexing
                         lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
                         lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
+                        
+                        # Snap to exact overhead pixel if polygon is too small
+                        if len(lat_idx) == 0:
+                            lat_idx = [np.argmin(np.abs(lats_arr - min(c_min_lat, c_max_lat)))]
+                        if len(lon_idx) == 0:
+                            lon_idx = [np.argmin(np.abs(lons_arr - (true_min_lon % 360)))]
                         
                         if len(lat_idx) > 0 and len(lon_idx) > 0:
                             min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
@@ -566,7 +531,7 @@ def scan_data(cycle_count, towns_df):
     return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, wfo_features, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     radar_layer = pdk.Layer(
         "BitmapLayer",
@@ -583,32 +548,6 @@ def render_map(cwa_layer, wfo_features, wfo_labels, city_shapes, show_radar, rad
     )
     layers.append(outline_layer)
 
-    # 2. Internal WFO Regions (Thinner, Pickable for Tooltips)
-    if wfo_features.get("features"):
-        wfo_layer = pdk.Layer(
-            "GeoJsonLayer", wfo_features, 
-            stroked=True, filled=False,
-            get_line_color=[25, 25, 112, 255], 
-            get_line_width=2500,  # Physical map width in meters (prevents invisible 1-pixel bugs)
-            line_width_min_pixels=2, pickable=True
-        )
-        layers.append(wfo_layer)
-    
-    # 3. WFO Centroid Text Labels
-    if wfo_labels:
-        wfo_text_layer = pdk.Layer(
-            "TextLayer",
-            data=wfo_labels,
-            get_position="coordinates",
-            get_text="wfo",
-            get_size=20,
-            get_color=[25, 25, 112, 255],
-            get_alignment_baseline="'center'",
-            font_weight="bold",
-            font_family="Helvetica, Arial, sans-serif"
-        )
-        layers.append(wfo_text_layer)
-    
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -722,7 +661,7 @@ for i, (prod, name) in enumerate(friendly_names.items()):
     health_cols[i].info(f"**{name}**\n\n{status}")
 
 st.pydeck_chart(render_map(
-    cwa_geojson, wfo_geojson, wfo_label_data, urban_shapes_geojson, 
+    cwa_geojson, urban_shapes_geojson, 
     toggle_radar, radar_opacity, 
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
