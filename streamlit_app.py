@@ -107,7 +107,7 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay MRMS RALA (AWS)", value=False, help="Downloads and processes live Reflectivity At Lowest Altitude data directly from the NOAA AWS bucket.")
+    toggle_radar = st.checkbox("Overlay MRMS RALA", value=False, help="MRMS Reflectivity At Lowest Altitude")
     radar_opacity = st.slider(
         "Overlay Opacity", 
         min_value=0.0, max_value=1.0, value=0.55, step=0.05,
