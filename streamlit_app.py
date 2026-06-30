@@ -730,4 +730,10 @@ with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=
         st.write("Initializing connections to NOAA data feeds...")
 
 if alert_results:
-    st.error("🚨 THRESHOLDS EXCEEDED
+    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
+    st.json(alert_results)
+else:
+    st.success("✅ No urban hydro hazards detected - at ease soldier.")
+
+if st.button("Refresh & Scan"):
+    st.rerun()
