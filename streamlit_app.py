@@ -489,13 +489,13 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     )
     layers.append(radar_layer)
 
-    # 1. CWA Perimeters (Light Blue border)
+    # 1. CWA Perimeters (Light Blue border with a responsive ghost fill for easy hover interaction)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, 
         stroked=True,
-        filled=False,
+        filled=True, # Set to True to make the entire interior area hoverable
         get_line_color=[135, 206, 250, 255], 
-        get_fill_color=[0, 0, 0, 0], 
+        get_fill_color=[0, 0, 0, 1], # Transparent fill that still registers mouse pointers
         get_line_width=3000, 
         line_width_min_pixels=3, 
         pickable=True
