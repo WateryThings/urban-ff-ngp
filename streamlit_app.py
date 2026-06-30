@@ -99,7 +99,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
+    * **Blue Lines & Labels:** NWS County Warning Area (CWA) peripheral and internal boundaries, identifying local WFO sectors (FGF, BIS, UNR, ABR, FSD).
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -190,10 +190,57 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
         
     return combined_geojson
 
+
+# --- INTERNAL WFO BOUNDARY ENGINE ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_wfo_boundaries():
+    """Fetches exact internal boundaries & calculates label centroids for the 5 NGP WFOs."""
+    url = "https://mesonet.agron.iastate.edu/geojson/cwa.geojson"
+    req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
+    ngp_wfos = ["FGF", "BIS", "UNR", "ABR", "FSD"]
+    filtered_features = []
+    labels = []
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            for feature in data.get("features", []):
+                wfo = feature["properties"].get("WFO", "")
+                if wfo in ngp_wfos:
+                    feature["properties"]["name"] = f"NWS WFO {wfo}"
+                    feature["properties"]["hover_info"] = "Internal County Warning Area Boundary"
+                    filtered_features.append(feature)
+                    
+                    # Calculate simple centroid for text labels
+                    geom_type = feature.get("geometry", {}).get("type", "")
+                    coords = feature.get("geometry", {}).get("coordinates", [])
+                    flat_coords = []
+                    if geom_type == "Polygon":
+                        for ring in coords: flat_coords.extend(ring)
+                    elif geom_type == "MultiPolygon":
+                        for poly in coords:
+                            for ring in poly: flat_coords.extend(ring)
+                            
+                    if flat_coords:
+                        lons = [c[0] for c in flat_coords]
+                        lats = [c[1] for c in flat_coords]
+                        # Bounding box center creates a very clean placement for labels
+                        center_lon = (min(lons) + max(lons)) / 2.0
+                        center_lat = (min(lats) + max(lats)) / 2.0
+                        labels.append({
+                            "wfo": wfo,
+                            "coordinates": [center_lon, center_lat]
+                        })
+                        
+            return {"type": "FeatureCollection", "features": filtered_features}, labels
+    except Exception:
+        return {"type": "FeatureCollection", "features": []}, []
+
+
 # Load databases
 urban_gdf = get_urban_centers()
 cwa_geojson = load_json_layer("cwa_outlines.json")
 raw_urban_boundaries = load_json_layer("urban_boundaries.json")
+wfo_geojson, wfo_label_data = get_wfo_boundaries()
 
 # Generate the hybrid polygon map featuring all 1,146 locations
 urban_shapes_geojson = generate_hybrid_urban_shapes(urban_gdf, raw_urban_boundaries)
@@ -500,7 +547,7 @@ def scan_data(cycle_count, towns_df):
     return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, wfo_features, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     radar_layer = pdk.Layer(
         "BitmapLayer",
@@ -510,11 +557,34 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
     )
     layers.append(radar_layer)
 
+    # 1. Existing Outer CWA Perimeter (Thick border)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, stroke_width=4,
         get_line_color=[25, 25, 112, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=3
     )
     layers.append(outline_layer)
+
+    # 2. Internal WFO Regions (Thinner, Pickable for Tooltips)
+    wfo_layer = pdk.Layer(
+        "GeoJsonLayer", wfo_features, stroke_width=2,
+        get_line_color=[25, 25, 112, 180], get_fill_color=[0, 0, 0, 0], 
+        line_width_min_pixels=1, pickable=True
+    )
+    layers.append(wfo_layer)
+    
+    # 3. WFO Centroid Text Labels
+    wfo_text_layer = pdk.Layer(
+        "TextLayer",
+        data=wfo_labels,
+        get_position="coordinates",
+        get_text="wfo",
+        get_size=20,
+        get_color=[25, 25, 112, 255],
+        get_alignment_baseline="'center'",
+        font_weight="bold",
+        font_family="Helvetica, Arial, sans-serif"
+    )
+    layers.append(wfo_text_layer)
     
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
@@ -629,7 +699,7 @@ for i, (prod, name) in enumerate(friendly_names.items()):
     health_cols[i].info(f"**{name}**\n\n{status}")
 
 st.pydeck_chart(render_map(
-    cwa_geojson, urban_shapes_geojson, 
+    cwa_geojson, wfo_geojson, wfo_label_data, urban_shapes_geojson, 
     toggle_radar, radar_opacity, 
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
