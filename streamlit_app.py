@@ -140,7 +140,6 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
     Loads detailed large city boundaries from JSON, then injects 
     custom rectangular boundaries for all missing small towns from the CSV.
     """
-    # FIX 2: Deep copy to completely prevent RAM memory cache leaks
     combined_geojson = copy.deepcopy(existing_geojson)
     existing_names = [str(feat["properties"].get("name", "")).strip().upper() for feat in combined_geojson.get("features", [])]
     
@@ -148,7 +147,6 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
         town_name = f"{row['name']}, {row['state']}".strip().upper()
         
         if town_name not in existing_names:
-            # Ensure absolute Min and Max are strictly ordered
             min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
             max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
             
@@ -157,8 +155,6 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
             true_min_lat = min(row['min_lat'], row['max_lat'])
             true_max_lat = max(row['min_lat'], row['max_lat'])
             
-            # DATA ANOMALY CLAMP: If the CSV bounding box is absurdly large (e.g. > 10 miles wide),
-            # clamp it down to a standard visual small-town radius so it doesn't wreck the map overlay.
             if (true_max_lat - true_min_lat > 0.15) or (true_max_lon - true_min_lon > 0.15):
                 center_lat = (true_min_lat + true_max_lat) / 2.0
                 center_lon = (true_min_lon + true_max_lon) / 2.0
@@ -201,7 +197,8 @@ def get_wfo_boundaries():
     filtered_features = []
     labels = []
     try:
-        with urllib.request.urlopen(req) as response:
+        # High-Speed Optimization: Added timeout to prevent app hangs
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 wfo = feature["properties"].get("WFO", "")
@@ -210,7 +207,6 @@ def get_wfo_boundaries():
                     feature["properties"]["hover_info"] = "Internal County Warning Area Boundary"
                     filtered_features.append(feature)
                     
-                    # Calculate simple centroid for text labels
                     geom_type = feature.get("geometry", {}).get("type", "")
                     coords = feature.get("geometry", {}).get("coordinates", [])
                     flat_coords = []
@@ -223,7 +219,6 @@ def get_wfo_boundaries():
                     if flat_coords:
                         lons = [c[0] for c in flat_coords]
                         lats = [c[1] for c in flat_coords]
-                        # Bounding box center creates a very clean placement for labels
                         center_lon = (min(lons) + max(lons)) / 2.0
                         center_lat = (min(lats) + max(lats)) / 2.0
                         labels.append({
@@ -253,7 +248,8 @@ def get_nws_warnings():
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
     try:
-        with urllib.request.urlopen(req) as response:
+        # High-Speed Optimization: Added timeout to prevent app hangs
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 event = feature["properties"].get("event", "")
@@ -293,7 +289,8 @@ def get_lsrs():
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
     try:
-        with urllib.request.urlopen(req) as response:
+        # High-Speed Optimization: Added timeout to prevent app hangs
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
                 event_type = str(feature["properties"].get("type", "")).upper()
@@ -314,7 +311,6 @@ def get_lsrs():
 # --- CACHED FILE LIST LAYER ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_latest_files(product_name, num_files=1):
-    # FIX 1: Disable fsspec directory caching so it checks S3 every single time
     fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y%m%d")
@@ -324,7 +320,6 @@ def get_latest_files(product_name, num_files=1):
     
     path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
     try:
-        # Force refresh=True to bypass any hidden python caches
         files = fs.ls(path_yesterday, refresh=True)
         all_files.extend([f for f in files if f.endswith('.grib2.gz')])
     except Exception:
@@ -393,7 +388,6 @@ def scan_data(cycle_count, towns_df):
             dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
             scan_time = dt_obj.strftime("%H:%M UTC")
             
-            # STALE DATA FAILSAFE: Don't evaluate if NOAA froze more than 60 mins ago
             age_minutes = (now_utc - dt_obj).total_seconds() / 60.0
             if age_minutes > 60:
                 logs.append(f"⚠️ {product} is stale ({int(age_minutes)} mins old). Skipping.")
@@ -417,6 +411,11 @@ def scan_data(cycle_count, towns_df):
             
             ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
             
+            # --- HIGH-SPEED OPTIMIZATION: Extract to raw Numpy Matrices to bypass xarray lag ---
+            lats_arr = ds_cropped.latitude.values
+            lons_arr = ds_cropped.longitude.values
+            data_arr = ds_cropped[var_name].values
+            
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 
@@ -424,16 +423,18 @@ def scan_data(cycle_count, towns_df):
                 c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                 c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                 
-                # STRICT CITY POLYGON EDGES (NO BUFFER)
                 true_min_lon = min(c_min_lon, c_max_lon)
                 true_max_lon = max(c_min_lon, c_max_lon)
                 
-                lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
-                lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
+                # Instant raw array indexing completely eliminates 6,800+ slow .sel() calls
+                lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
+                lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
                 
-                # FIX 3: Empty slice safety validation to prevent fatal .max() crashes
-                slice_data = ds_cropped.sel(latitude=lat_slice, longitude=lon_slice)[var_name]
-                val = slice_data.max().values if slice_data.size > 0 else np.nan
+                if len(lat_idx) > 0 and len(lon_idx) > 0:
+                    slice_data = data_arr[np.min(lat_idx):np.max(lat_idx)+1, np.min(lon_idx):np.max(lon_idx)+1]
+                    val = np.nanmax(slice_data) if slice_data.size > 0 else np.nan
+                else:
+                    val = np.nan
                 
                 if pd.notna(val) and val >= threshold:
                     town_tallies[key]["score"] += 1
@@ -493,6 +494,13 @@ def scan_data(cycle_count, towns_df):
                     cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
                     var_names = [list(d.data_vars)[0] for d in cropped_ds]
                     
+                    # --- HIGH-SPEED OPTIMIZATION: Extract to raw Numpy Matrices ---
+                    lats_arr = cropped_ds[0].latitude.values
+                    lons_arr = cropped_ds[0].longitude.values
+                    data_arr_0 = cropped_ds[0][var_names[0]].values
+                    data_arr_1 = cropped_ds[1][var_names[1]].values
+                    data_arr_2 = cropped_ds[2][var_names[2]].values
+                    
                     for _, row in towns_df.iterrows():
                         key = f"{row['name']}, {row['state']}"
                         
@@ -500,21 +508,26 @@ def scan_data(cycle_count, towns_df):
                         c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
                         c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
                         
-                        # STRICT CITY POLYGON EDGES (NO BUFFER)
                         true_min_lon = min(c_min_lon, c_max_lon)
                         true_max_lon = max(c_min_lon, c_max_lon)
                         
-                        lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
-                        lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
+                        # Instant raw array indexing
+                        lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat)) & (lats_arr <= max(c_min_lat, c_max_lat)))[0]
+                        lon_idx = np.where((lons_arr >= true_min_lon % 360) & (lons_arr <= true_max_lon % 360))[0]
                         
-                        # Apply Empty Slice Safety check sequentially
-                        slice1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]]
-                        slice2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]]
-                        slice3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]]
-                        
-                        v1 = slice1.max().values if slice1.size > 0 else np.nan
-                        v2 = slice2.max().values if slice2.size > 0 else np.nan
-                        v3 = slice3.max().values if slice3.size > 0 else np.nan
+                        if len(lat_idx) > 0 and len(lon_idx) > 0:
+                            min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
+                            min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
+                            
+                            slice1 = data_arr_0[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                            slice2 = data_arr_1[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                            slice3 = data_arr_2[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                            
+                            v1 = np.nanmax(slice1) if slice1.size > 0 else np.nan
+                            v2 = np.nanmax(slice2) if slice2.size > 0 else np.nan
+                            v3 = np.nanmax(slice3) if slice3.size > 0 else np.nan
+                        else:
+                            v1, v2, v3 = np.nan, np.nan, np.nan
                         
                         if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
                             if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
