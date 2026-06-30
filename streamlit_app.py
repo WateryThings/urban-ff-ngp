@@ -599,8 +599,13 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
 
     # 1. CWA Perimeters (Light Blue border)
     outline_layer = pdk.Layer(
-        "GeoJsonLayer", cwa_layer, stroke_width=4,
-        get_line_color=[135, 206, 250, 255], get_fill_color=[0, 0, 0, 0], line_width_min_pixels=3, pickable=True
+        "GeoJsonLayer", cwa_layer, 
+        stroked=True,
+        get_line_color=[135, 206, 250, 255], 
+        get_fill_color=[0, 0, 0, 0], 
+        get_line_width=3000, 
+        line_width_min_pixels=3, 
+        pickable=True
     )
     layers.append(outline_layer)
 
