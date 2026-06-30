@@ -96,7 +96,6 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Light Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 10 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -145,15 +144,40 @@ def load_json_layer(filepath):
         return {"type": "FeatureCollection", "features": []}
 
 @st.cache_data
-def get_processed_cwa_layer():
-    """Loads and formats the CWA layer exactly once, saving critical render time."""
+def get_processed_cwa_layer_v2():
+    """Loads and formats the CWA layer exactly once, calculating dynamic text labels."""
     cwa_geojson = load_json_layer("cwa_outlines.json")
     cwa_copy = copy.deepcopy(cwa_geojson)
+    labels = []
+    
     for feat in cwa_copy.get("features", []):
         wfo_id = feat.get("properties", {}).get("WFO", "Unknown")
         feat["properties"]["name"] = wfo_id
         feat["properties"]["hover_info"] = ""
-    return cwa_copy
+        
+        # Calculate dynamic text label centroids
+        geom_type = feat.get("geometry", {}).get("type", "")
+        coords = feat.get("geometry", {}).get("coordinates", [])
+        flat_coords = []
+        
+        if geom_type == "Polygon":
+            for ring in coords: flat_coords.extend(ring)
+        elif geom_type == "MultiPolygon":
+            for poly in coords:
+                for ring in poly: flat_coords.extend(ring)
+                
+        if flat_coords:
+            lons = [c[0] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
+            lats = [c[1] for c in flat_coords if isinstance(c, list) and len(c) >= 2]
+            if lons and lats:
+                center_lon = (min(lons) + max(lons)) / 2.0
+                center_lat = (min(lats) + max(lats)) / 2.0
+                labels.append({
+                    "wfo": wfo_id,
+                    "coordinates": [center_lon, center_lat]
+                })
+                
+    return cwa_copy, labels
 
 @st.cache_data
 def get_hybrid_urban_shapes():
@@ -454,7 +478,7 @@ def scan_data(cycle_count):
     return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     radar_layer = pdk.Layer(
         "BitmapLayer",
@@ -475,6 +499,21 @@ def render_map(cwa_layer, city_shapes, show_radar, radar_opacity_val, warnings_d
         pickable=True
     )
     layers.append(outline_layer)
+    
+    # 2. WFO Centroid Text Labels
+    if wfo_labels:
+        wfo_text_layer = pdk.Layer(
+            "TextLayer",
+            data=wfo_labels,
+            get_position="coordinates",
+            get_text="wfo",
+            get_size=20,
+            get_color=[25, 25, 112, 255],
+            get_alignment_baseline="'center'",
+            font_weight="bold",
+            font_family="Helvetica, Arial, sans-serif"
+        )
+        layers.append(wfo_text_layer)
 
     nws_warnings_layer = pdk.Layer(
         "GeoJsonLayer", warnings_data,
@@ -555,7 +594,7 @@ st.session_state['feed_health'] = feed_health
 upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
 
 # Fetch baseline map polygons dynamically out of Cache memory to prevent lagging
-cwa_geojson = get_processed_cwa_layer()
+cwa_geojson, wfo_labels = get_processed_cwa_layer_v2()
 urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
 
 for feature in urban_shapes_geojson["features"]:
@@ -588,7 +627,7 @@ for i, (prod, name) in enumerate(friendly_names.items()):
     health_cols[i].info(f"**{name}**\n\n{status}")
 
 st.pydeck_chart(render_map(
-    cwa_geojson, urban_shapes_geojson, 
+    cwa_geojson, wfo_labels, urban_shapes_geojson, 
     toggle_radar, radar_opacity, 
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
