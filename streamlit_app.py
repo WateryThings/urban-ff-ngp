@@ -11,6 +11,11 @@ import urllib.request
 import pydeck as pdk
 import time
 import copy
+import base64
+from io import BytesIO
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+from PIL import Image
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
@@ -102,9 +107,9 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay MRMS Instantaneous Reflectivity", value=False, help="Toggles live MRMS Seamless Hybrid Scan Reflectivity (the instantaneous rate proxy) over the map area.")
+    toggle_radar = st.checkbox("Overlay MRMS RALA (AWS)", value=False, help="Downloads and processes live Reflectivity At Lowest Altitude data directly from the NOAA AWS bucket.")
     radar_opacity = st.slider(
-        "MRMS Opacity", 
+        "Overlay Opacity", 
         min_value=0.0, max_value=1.0, value=0.55, step=0.05,
         help="Adjust the transparency of the MRMS overlay layer."
     )
@@ -375,6 +380,74 @@ def extract_file(s3_path, idx_suffix=""):
         if os.path.exists(local_grib): os.remove(local_grib)
         return None
 
+# --- AWS RALA IMAGE PROCESSOR ---
+@st.cache_data(show_spinner=False)
+def get_rala_overlay(cycle_count):
+    """Downloads AWS ReflectivityAtLowestAltitude_00.50, colorizes it to dBZ, and converts to a transparent base64 image layer."""
+    latest_files = get_latest_files("ReflectivityAtLowestAltitude_00.50", num_files=1)
+    if not latest_files: 
+        return None, None
+        
+    s3_path = latest_files[0]
+    local_grib = extract_file(s3_path, "rala_overlay")
+    if not local_grib: 
+        return None, None
+        
+    try:
+        ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
+        var_name = list(ds.data_vars)[0]
+        
+        master_lat_box = [41.5, 50.0]
+        target_min_lon, target_max_lon = -107.0, -93.5
+        
+        is_360 = bool(np.max(ds.longitude.values) > 180)
+        mlon_min = (360 + target_min_lon) if is_360 else target_min_lon
+        mlon_max = (360 + target_max_lon) if is_360 else target_max_lon
+        master_lon_slice = slice(mlon_min, mlon_max)
+        
+        lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
+        master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
+        
+        ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
+        data_arr = ds_cropped[var_name].squeeze().values
+        
+        # Ensure image origin aligns with map coordinates (Row 0 must be Top/North)
+        if lat_ascending:
+            data_arr = np.flipud(data_arr)
+            
+        lats = ds_cropped.latitude.values
+        lons = ds_cropped.longitude.values
+        lon_min, lon_max = np.min(lons), np.max(lons)
+        lat_min, lat_max = np.min(lats), np.max(lats)
+        
+        if is_360:
+            lon_min = lon_min - 360 if lon_min > 180 else lon_min
+            lon_max = lon_max - 360 if lon_max > 180 else lon_max
+            
+        # Dynamically map arrays to standard NWS radar colormap
+        cmap = cm.get_cmap('jet')
+        norm = mcolors.Normalize(vmin=0, vmax=75)
+        rgba = cmap(norm(data_arr))
+        
+        # Rigorous No-Data Masking: Turn standard values below 10 dBZ and AWS missing flags fully transparent
+        invalid_mask = np.isnan(data_arr) | (data_arr < 10) | (data_arr > 100)
+        rgba[invalid_mask, 3] = 0.0
+        
+        # Encode array to byte stream to avoid hard drive read/write locking bugs
+        img = Image.fromarray((rgba * 255).astype(np.uint8))
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        img_url = f"data:image/png;base64,{img_str}"
+        
+        ds.close()
+        if os.path.exists(local_grib): os.remove(local_grib)
+        
+        return img_url, [lon_min, lat_min, lon_max, lat_max]
+        
+    except Exception:
+        if os.path.exists(local_grib): os.remove(local_grib)
+        return None, None
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
@@ -515,15 +588,18 @@ def scan_data(cycle_count):
     return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, rala_img, rala_bounds, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
-    radar_layer = pdk.Layer(
-        "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/us/mrms.cgi?service=WMS&request=GetMap&version=1.1.1&layers=mrms_bref&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
-        bounds=[-110.0, 40.0, -90.0, 52.0],
-        opacity=radar_opacity_val, visible=show_radar
-    )
-    layers.append(radar_layer)
+    
+    if show_radar and rala_img and rala_bounds:
+        radar_layer = pdk.Layer(
+            "BitmapLayer",
+            image=rala_img,
+            bounds=[rala_bounds[0], rala_bounds[1], rala_bounds[2], rala_bounds[3]],
+            opacity=radar_opacity_val,
+            transparentColor=[0, 0, 0, 0]
+        )
+        layers.append(radar_layer)
 
     # 1. CWA Perimeters (Light Blue border with a responsive ghost fill for easy hover interaction)
     outline_layer = pdk.Layer(
@@ -590,6 +666,11 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     active_alert_results, pipeline_logs, feed_health = scan_data(count)
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
+    
+    rala_img, rala_bounds = None, None
+    if toggle_radar:
+        with st.spinner("Processing local AWS MRMS RALA Image Overlay..."):
+            rala_img, rala_bounds = get_rala_overlay(count)
 
 # --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
 if 'alert_history' not in st.session_state:
@@ -671,7 +752,7 @@ for i, (prod, name) in enumerate(friendly_names.items()):
 
 st.pydeck_chart(render_map(
     cwa_geojson, wfo_labels, urban_shapes_geojson, 
-    toggle_radar, radar_opacity, 
+    toggle_radar, radar_opacity, rala_img, rala_bounds,
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
 ))
