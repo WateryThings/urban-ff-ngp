@@ -97,7 +97,7 @@ with col2:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
-    * **Automated Refresh:** Updates every 5-minutes to sync with live MRMS data feed.
+    * **Automated Refresh:** Updates every 5-minutes.
     """, unsafe_allow_html=True)
 
 with col3:
