@@ -381,23 +381,22 @@ def scan_data(cycle_count, towns_df):
             for _, row in towns_df.iterrows():
                 key = f"{row['name']}, {row['state']}"
                 
-                c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
-                c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
                 
-                true_min_lon = min(c_min_lon, c_max_lon)
-                true_max_lon = max(c_min_lon, c_max_lon)
+                # Correctly handle longitude negativity
+                c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
+                true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
                 
                 c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
                 c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
                 
-                # Buffer pad of 0.015 deg (~1 mile) prevents microscopic polygons from slipping between MRMS grid nodes
-                pad = 0.015
+                # STRICT LIMITS: Removed the 0.015 pad to prevent bleeding into neighboring thunderstorms
+                lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
+                lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
                 
-                lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat) - pad) & (lats_arr <= max(c_min_lat, c_max_lat) + pad))[0]
-                lon_idx = np.where((lons_arr >= c_target_min_lon - pad) & (lons_arr <= c_target_max_lon + pad))[0]
-                
-                # Centroid fallback guarantees we snap to the town center if it falls completely between 1km pixels
+                # Centroid fallback guarantees we snap to the exact 1km town center if it falls completely between pixels
                 if len(lat_idx) == 0:
                     center_lat = (c_min_lat + c_max_lat) / 2.0
                     lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
@@ -410,7 +409,10 @@ def scan_data(cycle_count, towns_df):
                     min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
                     
                     slice_data = data_arr[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
-                    val = np.nanmax(slice_data) if slice_data.size > 0 else np.nan
+                    
+                    # MISSING DATA MASK: Strictly forces the engine to ignore NOAA's -99/-3/9999 no-data flags
+                    valid_data = slice_data[(slice_data >= 0) & (slice_data < 99990)]
+                    val = np.nanmax(valid_data) if valid_data.size > 0 else np.nan
                 else:
                     val = np.nan
                 
@@ -493,23 +495,23 @@ def scan_data(cycle_count, towns_df):
                     if da2.dims != ('latitude', 'longitude'): da2 = da2.transpose('latitude', 'longitude')
                     data_arr_2 = da2.values
                     
-                    pad = 0.015
-                    
                     for _, row in towns_df.iterrows():
                         key = f"{row['name']}, {row['state']}"
                         
-                        c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
-                        c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                        c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                        c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
                         
-                        true_min_lon = min(c_min_lon, c_max_lon)
-                        true_max_lon = max(c_min_lon, c_max_lon)
+                        # Correctly handle longitude negativity
+                        c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                        c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                        true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
+                        true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
                         
                         c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
                         c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
                         
-                        lat_idx = np.where((lats_arr >= min(c_min_lat, c_max_lat) - pad) & (lats_arr <= max(c_min_lat, c_max_lat) + pad))[0]
-                        lon_idx = np.where((lons_arr >= c_target_min_lon - pad) & (lons_arr <= c_target_max_lon + pad))[0]
+                        # STRICT LIMITS: Removed pad to prevent bleeding
+                        lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
+                        lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
                         
                         if len(lat_idx) == 0:
                             center_lat = (c_min_lat + c_max_lat) / 2.0
@@ -526,9 +528,14 @@ def scan_data(cycle_count, towns_df):
                             slice2 = data_arr_1[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
                             slice3 = data_arr_2[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
                             
-                            v1 = np.nanmax(slice1) if slice1.size > 0 else np.nan
-                            v2 = np.nanmax(slice2) if slice2.size > 0 else np.nan
-                            v3 = np.nanmax(slice3) if slice3.size > 0 else np.nan
+                            # MISSING DATA MASK: Ignores NOAA -99/-3/9999 error codes
+                            valid1 = slice1[(slice1 >= 0) & (slice1 < 99990)]
+                            valid2 = slice2[(slice2 >= 0) & (slice2 < 99990)]
+                            valid3 = slice3[(slice3 >= 0) & (slice3 < 99990)]
+                            
+                            v1 = np.nanmax(valid1) if valid1.size > 0 else np.nan
+                            v2 = np.nanmax(valid2) if valid2.size > 0 else np.nan
+                            v3 = np.nanmax(valid3) if valid3.size > 0 else np.nan
                         else:
                             v1, v2, v3 = np.nan, np.nan, np.nan
                         
