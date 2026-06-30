@@ -20,8 +20,6 @@ PRODUCTS = {
     "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": 2.19,   # 200 cfs/sq mi -> 2.19 m³/s/km²
     "FLASH_HP_MAXUNITSTREAMFLOW_00.00": 10.93      # 1000 cfs/sq mi -> 10.93 m³/s/km²
 }
-RAIN_RATE_PROD = "PrecipRate_00.00"
-RAIN_RATE_THRESH = 50.8                           # 2.0 in/hr -> 50.8 mm/hr
 
 # --- APP LAYOUT & BREAKOUT SPACING FIX ---
 st.set_page_config(page_title="Urban FF - NGP", layout="wide")
@@ -80,16 +78,15 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **at least 3 out of the 4** product thresholds are met strictly within the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **all 3** product thresholds are met strictly within the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    #### Monitored Products & Thresholds (3/4 must be met):
+    #### Monitored Products & Thresholds (3/3 must be met):
     * MRMS 1-hr QPE: $\ge$ 1.0"
-    * MRMS Instantaneous Rain Rates: $\ge$ 2.0"/1-hr (sustained over at least 3 scans)
     * FLASH CREST Max Unit Streamflow: $\ge$ 200 cfs/sq. mi.
     * FLASH Hydrophobic Max Unit Streamflow: $\ge$ 1000 cfs/sq. mi.
     """)
@@ -98,7 +95,8 @@ with col2:
     st.markdown("""
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** 3 out of 4 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
+    * **Solid Red Polygons:** 3 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
+    * **Light Blue Lines:** NWS County Warning Area (CWA) boundaries separating the local WFOs.
     * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 10 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
@@ -191,7 +189,7 @@ def generate_hybrid_urban_shapes(csv_df, existing_geojson):
     for feature in combined_geojson["features"]:
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
-        feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
+        feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
         
     return combined_geojson
 
@@ -332,7 +330,6 @@ def scan_data(cycle_count, towns_df):
     logs = []
     feed_health = {
         "RadarOnly_QPE_01H_00.00": "🔴 Offline",
-        "PrecipRate_00.00": "🔴 Offline",
         "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "🔴 Offline",
         "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "🔴 Offline"
     }
@@ -454,133 +451,13 @@ def scan_data(cycle_count, towns_df):
             feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
-
-    # --- SCAN SUSTAINED INSTANTANEOUS RAIN RATE BLOCK (3 SCANS) ---
-    rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
-    if len(rate_history_files) == 3:
-        time_window = []
-        stale_feed = False
-        for f in rate_history_files:
-            try:
-                t_str = f.split('_')[-1].split('.')[0]
-                dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
-                time_window.append(dt_obj.strftime("%H:%M UTC"))
-                if (now_utc - dt_obj).total_seconds() / 60.0 > 60:
-                    stale_feed = True
-            except:
-                pass
-        
-        if stale_feed:
-            logs.append(f"⚠️ {RAIN_RATE_PROD} contains data >60 mins old. Skipping.")
-            feed_health[RAIN_RATE_PROD] = "🟡 Stale Feed"
-        else:
-            if len(time_window) > 1:
-                time_range_str = f"[{time_window[0]} to {time_window[-1]}]"
-            else:
-                time_range_str = "[Live Scans]"
-                
-            try:
-                local_gribs = [extract_file(f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
-                datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
-                
-                if len(datasets) == 3:
-                    is_360 = bool(np.max(datasets[0].longitude.values) > 180)
-                    target_min_lon = (360 - 107.0) if is_360 else -107.0
-                    target_max_lon = (360 - 93.5) if is_360 else -93.5
-                    master_lon_slice = slice(target_min_lon, target_max_lon)
-                    
-                    lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
-                    master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
-                    
-                    cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
-                    var_names = [list(d.data_vars)[0] for d in cropped_ds]
-                    
-                    lats_arr = cropped_ds[0].latitude.values
-                    lons_arr = cropped_ds[0].longitude.values
-                    
-                    # Ensure perfectly transposed [lat, lon] arrays
-                    da0 = cropped_ds[0][var_names[0]].squeeze()
-                    if da0.dims != ('latitude', 'longitude'): da0 = da0.transpose('latitude', 'longitude')
-                    data_arr_0 = da0.values
-                    
-                    da1 = cropped_ds[1][var_names[1]].squeeze()
-                    if da1.dims != ('latitude', 'longitude'): da1 = da1.transpose('latitude', 'longitude')
-                    data_arr_1 = da1.values
-                    
-                    da2 = cropped_ds[2][var_names[2]].squeeze()
-                    if da2.dims != ('latitude', 'longitude'): da2 = da2.transpose('latitude', 'longitude')
-                    data_arr_2 = da2.values
-                    
-                    for _, row in towns_df.iterrows():
-                        key = f"{row['name']}, {row['state']}"
-                        
-                        c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
-                        
-                        # Correctly handle longitude negativity
-                        c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                        c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
-                        true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
-                        true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
-                        
-                        c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
-                        c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
-                        
-                        # STRICT LIMITS: Removed pad to prevent bleeding
-                        lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
-                        lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
-                        
-                        if len(lat_idx) == 0:
-                            center_lat = (c_min_lat + c_max_lat) / 2.0
-                            lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
-                        if len(lon_idx) == 0:
-                            center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
-                            lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
-                        
-                        if len(lat_idx) > 0 and len(lon_idx) > 0:
-                            min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
-                            min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
-                            
-                            slice1 = data_arr_0[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
-                            slice2 = data_arr_1[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
-                            slice3 = data_arr_2[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
-                            
-                            # MISSING DATA MASK: Ignores NOAA -99/-3/9999 error codes
-                            valid1 = slice1[(slice1 >= 0) & (slice1 < 99990)]
-                            valid2 = slice2[(slice2 >= 0) & (slice2 < 99990)]
-                            valid3 = slice3[(slice3 >= 0) & (slice3 < 99990)]
-                            
-                            v1 = np.nanmax(valid1) if valid1.size > 0 else np.nan
-                            v2 = np.nanmax(valid2) if valid2.size > 0 else np.nan
-                            v3 = np.nanmax(valid3) if valid3.size > 0 else np.nan
-                        else:
-                            v1, v2, v3 = np.nan, np.nan, np.nan
-                        
-                        if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
-                            if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                                town_tallies[key]["score"] += 1
-                                
-                                pk_hr = float(min(v1, v2, v3) / 25.4)
-                                town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr) {time_range_str}")
-                                
-                    for d in datasets: d.close()
-                    for g in local_gribs:
-                        if g and os.path.exists(g): os.remove(g)
-                    logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
-                    feed_health[RAIN_RATE_PROD] = "🟢 Active (3-Scans)"
-            except Exception as e:
-                logs.append(f"❌ Rain Rate History processing error: {str(e)}")
-                feed_health[RAIN_RATE_PROD] = "🟡 Parse Error"
-    else:
-        logs.append(f"⚠️ {RAIN_RATE_PROD} waiting for more scans ({len(rate_history_files)}/3)")
-        feed_health[RAIN_RATE_PROD] = f"🟡 WAITING ({len(rate_history_files)}/3 Scans)"
-
     st.session_state['pipeline_diagnostic_logs'] = logs
 
-    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 3 OUT OF 4 METRICS
+    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 3 OUT OF 3 METRICS
     for town_key, data in town_tallies.items():
         if data["score"] >= 3:
             results[town_key] = {
-                "Consensus Score": f"{data['score']} of 4 Metrics Broken",
+                "Consensus Score": f"{data['score']} of 3 Metrics Broken",
                 "Trigger Details": data["details"]
             }
     return results, logs, feed_health
@@ -698,21 +575,21 @@ for feature in urban_shapes_geojson["features"]:
         if "Cooldown" in upper_alert_results[feat_name].get("Consensus Score", ""):
             feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 10-Min Drainage Cooldown Active"
         else:
-            feature["properties"]["hover_info"] = "🚨 CRITICAL: 3+ HAZARD THRESHOLDS EXCEEDED"
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 3 HAZARD THRESHOLDS EXCEEDED"
     else:
         # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
-        feature["properties"]["hover_info"] = "Monitoring 4-Product Hazard Consensus"
+        feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
 # --- NEW: DATA FEED HEALTH DASHBOARD ---
 st.markdown("##### 🌱 Live Data Feed Health")
-health_cols = st.columns(4)
+# We now display exactly 3 columns since we dropped Instantaneous Rain Rates
+health_cols = st.columns(3)
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
-    "PrecipRate_00.00": "MRMS Rain Rates",
     "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Flow",
     "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Flow"
 }
