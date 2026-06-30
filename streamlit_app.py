@@ -78,7 +78,7 @@ st.markdown("---")
 
 # --- BLUF & OPERATIONAL USER GUIDE ---
 st.markdown("""
-**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **all 3** product thresholds are met strictly within the city limits.
+**BLUF:** This real-time tool will flash red for any city or small town that is at risk for flash flooding when **all 3** product thresholds are met within the city limits.
 """)
 
 col1, col2, col3 = st.columns([2, 2, 1])
