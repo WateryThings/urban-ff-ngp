@@ -267,8 +267,8 @@ def get_lsrs():
 # --- CACHED FILE LIST LAYER ---
 @st.cache_data(ttl=60, show_spinner=False)
 def get_latest_files(product_name, num_files=1):
-    # FIX 1: Seamlessly bridge yesterday and today's files to prevent the UTC Midnight Bug
-    fs = s3fs.S3FileSystem(anon=True)
+    # FIX 1: Disable fsspec directory caching so it checks S3 every single time
+    fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y%m%d")
     yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
@@ -277,14 +277,15 @@ def get_latest_files(product_name, num_files=1):
     
     path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
     try:
-        files = fs.ls(path_yesterday)
+        # Force refresh=True to bypass any hidden python caches
+        files = fs.ls(path_yesterday, refresh=True)
         all_files.extend([f for f in files if f.endswith('.grib2.gz')])
     except Exception:
         pass
         
     path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
     try:
-        files = fs.ls(path_today)
+        files = fs.ls(path_today, refresh=True)
         all_files.extend([f for f in files if f.endswith('.grib2.gz')])
     except Exception:
         pass
@@ -295,7 +296,7 @@ def get_latest_files(product_name, num_files=1):
 
 
 def extract_file(s3_path, idx_suffix=""):
-    fs = s3fs.S3FileSystem(anon=True)
+    fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
     temporal_id = time.time_ns()
     local_gz = f"temp_{idx_suffix}_{temporal_id}.grib2.gz"
     local_grib = f"temp_{idx_suffix}_{temporal_id}.grib2"
@@ -329,6 +330,7 @@ def scan_data(cycle_count, towns_df):
     
     master_lat_box = [41.5, 50.0]
     master_lon_slice = slice(360 - 107.0, 360 - 93.5)
+    now_utc = datetime.now(timezone.utc)
     
     # --- SCAN CORE PRODUCTS BLOCK ---
     for product, threshold in PRODUCTS.items():
@@ -341,8 +343,15 @@ def scan_data(cycle_count, towns_df):
         s3_path = latest_files[0]
         try:
             t_str = s3_path.split('_')[-1].split('.')[0]
-            dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S")
+            dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
             scan_time = dt_obj.strftime("%H:%M UTC")
+            
+            # STALE DATA FAILSAFE: Don't evaluate if NOAA froze more than 60 mins ago
+            age_minutes = (now_utc - dt_obj).total_seconds() / 60.0
+            if age_minutes > 60:
+                logs.append(f"⚠️ {product} is stale ({int(age_minutes)} mins old). Skipping.")
+                feed_health[product] = f"🟡 Stale ({int(age_minutes)}m)"
+                continue
         except:
             scan_time = "Live Scan"
             
@@ -406,68 +415,75 @@ def scan_data(cycle_count, towns_df):
     rate_history_files = get_latest_files(RAIN_RATE_PROD, num_files=3)
     if len(rate_history_files) == 3:
         time_window = []
+        stale_feed = False
         for f in rate_history_files:
             try:
                 t_str = f.split('_')[-1].split('.')[0]
-                dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S")
+                dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
                 time_window.append(dt_obj.strftime("%H:%M UTC"))
+                if (now_utc - dt_obj).total_seconds() / 60.0 > 60:
+                    stale_feed = True
             except:
                 pass
         
-        if len(time_window) > 1:
-            time_range_str = f"[{time_window[0]} to {time_window[-1]}]"
+        if stale_feed:
+            logs.append(f"⚠️ {RAIN_RATE_PROD} contains data >60 mins old. Skipping.")
+            feed_health[RAIN_RATE_PROD] = "🟡 Stale Feed"
         else:
-            time_range_str = "[Live Scans]"
-            
-        try:
-            local_gribs = [extract_file(f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
-            datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
-            
-            if len(datasets) == 3:
-                lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
-                master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
+            if len(time_window) > 1:
+                time_range_str = f"[{time_window[0]} to {time_window[-1]}]"
+            else:
+                time_range_str = "[Live Scans]"
                 
-                cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
-                var_names = [list(d.data_vars)[0] for d in cropped_ds]
+            try:
+                local_gribs = [extract_file(f, f"rate_{i}") for i, f in enumerate(rate_history_files)]
+                datasets = [xr.open_dataset(g, engine="cfgrib", backend_kwargs={'indexpath': ''}) for g in local_gribs if g]
                 
-                for _, row in towns_df.iterrows():
-                    key = f"{row['name']}, {row['state']}"
+                if len(datasets) == 3:
+                    lat_ascending = bool(datasets[0].latitude[0] < datasets[0].latitude[-1])
+                    master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
                     
-                    c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
-                    c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                    c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                    cropped_ds = [d.sel(latitude=master_lat_slice, longitude=master_lon_slice).load() for d in datasets]
+                    var_names = [list(d.data_vars)[0] for d in cropped_ds]
                     
-                    # STRICT CITY POLYGON EDGES (NO BUFFER)
-                    true_min_lon = min(c_min_lon, c_max_lon)
-                    true_max_lon = max(c_min_lon, c_max_lon)
-                    
-                    lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
-                    lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
-                    
-                    # Apply Empty Slice Safety check sequentially
-                    slice1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]]
-                    slice2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]]
-                    slice3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]]
-                    
-                    v1 = slice1.max().values if slice1.size > 0 else np.nan
-                    v2 = slice2.max().values if slice2.size > 0 else np.nan
-                    v3 = slice3.max().values if slice3.size > 0 else np.nan
-                    
-                    if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
-                        if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
-                            town_tallies[key]["score"] += 1
-                            
-                            pk_hr = float(min(v1, v2, v3) / 25.4)
-                            town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr) {time_range_str}")
-                            
-                for d in datasets: d.close()
-                for g in local_gribs:
-                    if g and os.path.exists(g): os.remove(g)
-                logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
-                feed_health[RAIN_RATE_PROD] = "🟢 Active (3-Scans)"
-        except Exception as e:
-            logs.append(f"❌ Rain Rate History processing error: {str(e)}")
-            feed_health[RAIN_RATE_PROD] = "🟡 Parse Error"
+                    for _, row in towns_df.iterrows():
+                        key = f"{row['name']}, {row['state']}"
+                        
+                        c_min_lat, c_max_lat = row['min_lat'], row['max_lat']
+                        c_min_lon = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                        c_max_lon = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                        
+                        # STRICT CITY POLYGON EDGES (NO BUFFER)
+                        true_min_lon = min(c_min_lon, c_max_lon)
+                        true_max_lon = max(c_min_lon, c_max_lon)
+                        
+                        lat_slice = slice(min(c_min_lat, c_max_lat), max(c_min_lat, c_max_lat)) if lat_ascending else slice(max(c_min_lat, c_max_lat), min(c_min_lat, c_max_lat))
+                        lon_slice = slice((true_min_lon % 360), (true_max_lon % 360))
+                        
+                        # Apply Empty Slice Safety check sequentially
+                        slice1 = cropped_ds[0].sel(latitude=lat_slice, longitude=lon_slice)[var_names[0]]
+                        slice2 = cropped_ds[1].sel(latitude=lat_slice, longitude=lon_slice)[var_names[1]]
+                        slice3 = cropped_ds[2].sel(latitude=lat_slice, longitude=lon_slice)[var_names[2]]
+                        
+                        v1 = slice1.max().values if slice1.size > 0 else np.nan
+                        v2 = slice2.max().values if slice2.size > 0 else np.nan
+                        v3 = slice3.max().values if slice3.size > 0 else np.nan
+                        
+                        if pd.notna(v1) and pd.notna(v2) and pd.notna(v3):
+                            if v1 >= RAIN_RATE_THRESH and v2 >= RAIN_RATE_THRESH and v3 >= RAIN_RATE_THRESH:
+                                town_tallies[key]["score"] += 1
+                                
+                                pk_hr = float(min(v1, v2, v3) / 25.4)
+                                town_tallies[key]["details"].append(f"Sustained Rain Rate: {pk_hr:.2f} in/hr (Thresh: 2.00 in/hr) {time_range_str}")
+                                
+                    for d in datasets: d.close()
+                    for g in local_gribs:
+                        if g and os.path.exists(g): os.remove(g)
+                    logs.append(f"✅ Successfully scanned: {RAIN_RATE_PROD} (3-Scan Multi-Layer History)")
+                    feed_health[RAIN_RATE_PROD] = "🟢 Active (3-Scans)"
+            except Exception as e:
+                logs.append(f"❌ Rain Rate History processing error: {str(e)}")
+                feed_health[RAIN_RATE_PROD] = "🟡 Parse Error"
     else:
         logs.append(f"⚠️ {RAIN_RATE_PROD} waiting for more scans ({len(rate_history_files)}/3)")
         feed_health[RAIN_RATE_PROD] = f"🟡 WAITING ({len(rate_history_files)}/3 Scans)"
