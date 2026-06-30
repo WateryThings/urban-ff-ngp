@@ -142,7 +142,7 @@ def get_urban_centers():
     
     return df
 
-@st.cache_data
+# FIX: Removed the @st.cache_data decorator so Streamlit stops holding onto the old, melted JSON file!
 def load_json_layer(filepath):
     try:
         with open(filepath, "r") as f:
