@@ -135,7 +135,6 @@ def get_urban_centers():
     
     return df
 
-@st.cache_data
 def load_json_layer(filepath):
     try:
         with open(filepath, "r") as f:
@@ -144,14 +143,16 @@ def load_json_layer(filepath):
         return {"type": "FeatureCollection", "features": []}
 
 @st.cache_data
-def get_processed_cwa_layer_v2():
+def get_processed_cwa_layer_final():
     """Loads and formats the CWA layer exactly once, calculating dynamic text labels."""
     cwa_geojson = load_json_layer("cwa_outlines.json")
     cwa_copy = copy.deepcopy(cwa_geojson)
     labels = []
     
     for feat in cwa_copy.get("features", []):
-        wfo_id = feat.get("properties", {}).get("WFO", "Unknown")
+        props = feat.get("properties", {})
+        # Smart extraction: GeoPandas sometimes saves columns in lowercase
+        wfo_id = str(props.get("WFO", props.get("wfo", props.get("cwa", "Unknown")))).upper()
         feat["properties"]["name"] = wfo_id
         feat["properties"]["hover_info"] = ""
         
@@ -492,6 +493,7 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, 
         stroked=True,
+        filled=False,
         get_line_color=[135, 206, 250, 255], 
         get_fill_color=[0, 0, 0, 0], 
         get_line_width=3000, 
@@ -594,7 +596,7 @@ st.session_state['feed_health'] = feed_health
 upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
 
 # Fetch baseline map polygons dynamically out of Cache memory to prevent lagging
-cwa_geojson, wfo_labels = get_processed_cwa_layer_v2()
+cwa_geojson, wfo_labels = get_processed_cwa_layer_final()
 urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
 
 for feature in urban_shapes_geojson["features"]:
@@ -610,6 +612,11 @@ for feature in urban_shapes_geojson["features"]:
             feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 10-Min Drainage Cooldown Active"
         else:
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3 HAZARD THRESHOLDS EXCEEDED"
+    else:
+        # Re-apply base state in case the map re-renders after an alert expires
+        feature["properties"]["fill_color"] = [100, 100, 100, 160]     
+        feature["properties"]["line_color"] = [70, 70, 70, 200]     
+        feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
