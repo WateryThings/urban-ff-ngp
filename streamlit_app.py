@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-        😖 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID EYE CONTACT. DO NOT ENGAGE. CRASH IMMINENT. 
+        😖 CAUTION: THIS WEBSITE IS CURRENTLY HAVING A MENTAL BREAKDOWN AND IS UNSTABLE. AVOID WITH CAUTION. DO NOT ENGAGE. CRASH IMMINENT. 
     </div>
 """)
 
@@ -96,7 +96,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** 3 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 10 minutes after product thresholds have dropped below the required criteria.
+    * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
     * **Automated Refresh:** Updates every 2-minutes to sync with live MRMS data feed.
     """, unsafe_allow_html=True)
 
@@ -555,7 +555,7 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
-# --- 10-MINUTE IMPACT COOLDOWN LOGIC ---
+# --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
 if 'alert_history' not in st.session_state:
     st.session_state['alert_history'] = {}
 
@@ -576,10 +576,10 @@ keys_to_remove = []
 for town_key, hist in list(st.session_state['alert_history'].items()):
     if town_key not in active_alert_results:
         time_since_trigger = current_utc_time - hist["time"]
-        if time_since_trigger <= timedelta(minutes=10):
-            # Town is in the 10-minute cooldown window
+        if time_since_trigger <= timedelta(minutes=30):
+            # Town is in the 30-minute cooldown window
             cooldown_data = hist["data"].copy()
-            cooldown_data["Consensus Score"] = "In 10-Min Impact Cooldown (Runoff Lag)"
+            cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
             alert_results[town_key] = cooldown_data
         else:
             # Cooldown completely expired
@@ -609,7 +609,7 @@ for feature in urban_shapes_geojson["features"]:
         
         # Dynamically change the hover tooltip based on whether it is an active threat or just draining
         if "Cooldown" in upper_alert_results[feat_name].get("Consensus Score", ""):
-            feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 10-Min Drainage Cooldown Active"
+            feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 30-Min Drainage Cooldown Active"
         else:
             feature["properties"]["hover_info"] = "🚨 CRITICAL: 3 HAZARD THRESHOLDS EXCEEDED"
     else:
