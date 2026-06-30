@@ -6,3 +6,5 @@ xarray
 cfgrib
 pydeck
 streamlit-autorefresh
+matplotlib
+Pillow
