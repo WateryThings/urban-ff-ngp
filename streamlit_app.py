@@ -102,11 +102,11 @@ with col2:
 
 with col3:
     st.markdown("#### Map Layers:")
-    toggle_radar = st.checkbox("Overlay MRMS Reflectivity At Lowest Altitude", value=False)
+    toggle_radar = st.checkbox("Overlay Base Reflectivity", value=False, help="Toggles live IEM NEXRAD Base Reflectivity mosaic over the map area.")
     radar_opacity = st.slider(
-        "Overlay Opacity", 
+        "Radar Opacity", 
         min_value=0.0, max_value=1.0, value=0.55, step=0.05,
-        help="Adjust the transparency of the MRMS overlay layer."
+        help="Adjust the transparency of the Base Reflectivity overlay layer."
     )
     toggle_warnings = st.checkbox("Overlay FAYs and FFWs", value=False, help="Toggles active NWS Flood Advisories (Light Green) and Flash Flood Warnings (Dark Green).")
     toggle_lsrs = st.checkbox("Overlay Flash Flood LSRs", value=False, help="Toggles NWS Local Storm Reports (LSRs) for Flash Flooding over the past 24 hours.")
@@ -518,10 +518,10 @@ def scan_data(cycle_count):
 def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
     layers = []
     
-    # MRMS Reflectivity at Lowest Altitude WMS Overlay (Replaces the crashing Base64 method)
+    # IEM NEXRAD Base Reflectivity WMS Overlay
     radar_layer = pdk.Layer(
         "BitmapLayer",
-        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/us/mrms.cgi?service=WMS&request=GetMap&version=1.1.1&layers=mrms_bref&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
         bounds=[-110.0, 40.0, -90.0, 52.0],
         opacity=radar_opacity_val, 
         visible=show_radar
