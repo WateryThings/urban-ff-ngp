@@ -13,7 +13,7 @@ import time
 import copy
 import base64
 from io import BytesIO
-import matplotlib.cm as cm
+import matplotlib as mpl
 import matplotlib.colors as mcolors
 from PIL import Image
 from streamlit_autorefresh import st_autorefresh
@@ -384,14 +384,17 @@ def extract_file(s3_path, idx_suffix=""):
 @st.cache_data(show_spinner=False)
 def get_rala_overlay(cycle_count):
     """Downloads AWS ReflectivityAtLowestAltitude_00.50, colorizes it to dBZ, and converts to a transparent base64 image layer."""
+    logs = []
     latest_files = get_latest_files("ReflectivityAtLowestAltitude_00.50", num_files=1)
     if not latest_files: 
-        return None, None
+        logs.append("❌ MRMS RALA: Could not find recent files on AWS S3.")
+        return None, None, logs
         
     s3_path = latest_files[0]
     local_grib = extract_file(s3_path, "rala_overlay")
     if not local_grib: 
-        return None, None
+        logs.append("❌ MRMS RALA: Failed to extract GRIB2 file.")
+        return None, None, logs
         
     try:
         ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
@@ -409,7 +412,12 @@ def get_rala_overlay(cycle_count):
         master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
         
         ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
-        data_arr = ds_cropped[var_name].squeeze().values
+        
+        # Explicit axis transposition guaranteeing [latitude, longitude] ordering
+        da = ds_cropped[var_name].squeeze()
+        if da.dims != ('latitude', 'longitude'):
+            da = da.transpose('latitude', 'longitude')
+        data_arr = da.values
         
         # Ensure image origin aligns with map coordinates (Row 0 must be Top/North)
         if lat_ascending:
@@ -424,8 +432,8 @@ def get_rala_overlay(cycle_count):
             lon_min = lon_min - 360 if lon_min > 180 else lon_min
             lon_max = lon_max - 360 if lon_max > 180 else lon_max
             
-        # Dynamically map arrays to standard NWS radar colormap
-        cmap = cm.get_cmap('jet')
+        # Dynamically map arrays to standard NWS radar colormap (Using modern Matplotlib API)
+        cmap = mpl.colormaps['jet']
         norm = mcolors.Normalize(vmin=0, vmax=75)
         rgba = cmap(norm(data_arr))
         
@@ -434,7 +442,7 @@ def get_rala_overlay(cycle_count):
         rgba[invalid_mask, 3] = 0.0
         
         # Encode array to byte stream to avoid hard drive read/write locking bugs
-        img = Image.fromarray((rgba * 255).astype(np.uint8))
+        img = Image.fromarray((rgba * 255).astype(np.uint8), mode='RGBA')
         buffered = BytesIO()
         img.save(buffered, format="PNG")
         img_str = base64.b64encode(buffered.getvalue()).decode()
@@ -443,11 +451,13 @@ def get_rala_overlay(cycle_count):
         ds.close()
         if os.path.exists(local_grib): os.remove(local_grib)
         
-        return img_url, [lon_min, lat_min, lon_max, lat_max]
+        logs.append("✅ MRMS RALA: Successfully parsed and rendered overlay.")
+        return img_url, [lon_min, lat_min, lon_max, lat_max], logs
         
-    except Exception:
+    except Exception as e:
         if os.path.exists(local_grib): os.remove(local_grib)
-        return None, None
+        logs.append(f"❌ MRMS RALA Crash: {str(e)}")
+        return None, None, logs
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
 @st.cache_data(show_spinner=False)
@@ -670,7 +680,8 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     rala_img, rala_bounds = None, None
     if toggle_radar:
         with st.spinner("Processing local AWS MRMS RALA Image Overlay..."):
-            rala_img, rala_bounds = get_rala_overlay(count)
+            rala_img, rala_bounds, rala_logs = get_rala_overlay(count)
+            pipeline_logs.extend(rala_logs)
 
 # --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
 if 'alert_history' not in st.session_state:
