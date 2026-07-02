@@ -271,4 +271,427 @@ def get_nws_warnings():
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
     filtered_features = []
     try:
-        with urllib.request.urlopen(req, timeout=10)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            for feature in data.get("features", []):
+                event = feature["properties"].get("event", "")
+                if event in ["Flash Flood Warning", "Flood Advisory"]:
+                    headline = feature["properties"].get("headline", "Active Warning")
+                    raw_area = feature["properties"].get("areaDesc", "Unknown Area")
+                    formatted_areas = []
+                    for a in raw_area.split(";"):
+                        a = a.strip()
+                        if "County" not in a and a != "Unknown Area":
+                            if "," in a:
+                                parts = a.split(",", 1)
+                                formatted_areas.append(f"{parts[0].strip()} County, {parts[1].strip()}")
+                            else:
+                                formatted_areas.append(f"{a} County")
+                        else:
+                            formatted_areas.append(a)
+                    clean_area = ", ".join(formatted_areas)
+                    feature["properties"]["name"] = f"⚠️ {event}"
+                    feature["properties"]["hover_info"] = f"<b>Details:</b> {headline}<br/><b>Affected Counties:</b> {clean_area}"
+                    if event == "Flash Flood Warning":
+                        feature["properties"]["fill_color"] = [0, 128, 0, 40]       
+                        feature["properties"]["line_color"] = [0, 100, 0, 255]      
+                    else: 
+                        feature["properties"]["fill_color"] = [144, 238, 144, 50]   
+                        feature["properties"]["line_color"] = [50, 205, 50, 255]    
+                    filtered_features.append(feature)
+            return {"type": "FeatureCollection", "features": filtered_features}
+    except Exception:
+        return {"type": "FeatureCollection", "features": []}
+
+
+# --- LOCAL STORM REPORTS ENGINE ---
+@st.cache_data(ttl=120, show_spinner=False)
+def get_lsrs():
+    url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
+    req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
+    filtered_features = []
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            for feature in data.get("features", []):
+                event_type = str(feature["properties"].get("type", "")).upper()
+                if event_type == "FLASH FLOOD":
+                    remark = feature["properties"].get("remark", "No additional details provided.")
+                    city = feature["properties"].get("city", "Unknown")
+                    county = feature["properties"].get("county", "Unknown")
+                    feature["properties"]["name"] = "💧 Flash Flood LSR"
+                    feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
+                    feature["properties"]["fill_color"] = [255, 140, 0, 220]
+                    feature["properties"]["line_color"] = [255, 255, 255, 255]
+                    filtered_features.append(feature)
+            return {"type": "FeatureCollection", "features": filtered_features}
+    except Exception:
+        return {"type": "FeatureCollection", "features": []}
+
+
+# --- CACHED FILE LIST LAYER ---
+@st.cache_data(ttl=60, show_spinner=False)
+def get_latest_files(product_name, num_files=1):
+    fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
+    now_utc = datetime.now(timezone.utc)
+    today_str = now_utc.strftime("%Y%m%d")
+    yesterday_str = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
+    
+    all_files = []
+    
+    path_yesterday = f"noaa-mrms-pds/CONUS/{product_name}/{yesterday_str}/"
+    try:
+        files = fs.ls(path_yesterday, refresh=True)
+        all_files.extend([f for f in files if f.endswith('.grib2.gz')])
+    except Exception:
+        pass
+        
+    path_today = f"noaa-mrms-pds/CONUS/{product_name}/{today_str}/"
+    try:
+        files = fs.ls(path_today, refresh=True)
+        all_files.extend([f for f in files if f.endswith('.grib2.gz')])
+    except Exception:
+        pass
+        
+    if all_files:
+        return sorted(all_files)[-num_files:]
+    return []
+
+
+def extract_file(s3_path, idx_suffix=""):
+    fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
+    temporal_id = time.time_ns()
+    local_gz = f"temp_{idx_suffix}_{temporal_id}.grib2.gz"
+    local_grib = f"temp_{idx_suffix}_{temporal_id}.grib2"
+    try:
+        fs.get(s3_path, local_gz)
+        with gzip.open(local_gz, 'rb') as f_in:
+            with open(local_grib, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        if os.path.exists(local_gz):
+            os.remove(local_gz)
+        return local_grib
+    except Exception:
+        if os.path.exists(local_gz): os.remove(local_gz)
+        if os.path.exists(local_grib): os.remove(local_grib)
+        return None
+
+
+# --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
+@st.cache_data(show_spinner=False)
+def scan_data(cycle_count):
+    towns_df = get_urban_centers()
+    results = {}
+    logs = []
+    feed_health = {
+        "RadarOnly_QPE_01H_00.00": "🔴 Offline",
+        "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "🔴 Offline",
+        "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "🔴 Offline"
+    }
+    
+    town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
+    
+    master_lat_box = [41.5, 50.0]
+    now_utc = datetime.now(timezone.utc)
+    
+    # --- SCAN CORE PRODUCTS BLOCK ---
+    for product, threshold in PRODUCTS.items():
+        latest_files = get_latest_files(product, num_files=1)
+        if not latest_files: 
+            logs.append(f"❌ Could not find recent files for {product} on NOAA S3.")
+            feed_health[product] = "🔴 Missing S3 Data"
+            continue
+            
+        s3_path = latest_files[0]
+        try:
+            t_str = s3_path.split('_')[-1].split('.')[0]
+            dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+            scan_time = dt_obj.strftime("%H:%M UTC")
+            
+            age_minutes = (now_utc - dt_obj).total_seconds() / 60.0
+            if age_minutes > 60:
+                logs.append(f"⚠️ {product} is stale ({int(age_minutes)} mins old). Skipping.")
+                feed_health[product] = f"🟡 Stale ({int(age_minutes)}m)"
+                continue
+        except:
+            scan_time = "Live Scan"
+            
+        local_grib = extract_file(s3_path, product)
+        if not local_grib: 
+            logs.append(f"❌ Failed to extract grib file for {product}.")
+            feed_health[product] = "🔴 Extract Failed"
+            continue
+            
+        try:
+            ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
+            var_name = list(ds.data_vars)[0]
+            
+            # Universal Coordinate Detection: Safely handle 0-360 vs -180/180
+            is_360 = bool(np.max(ds.longitude.values) > 180)
+            target_min_lon = (360 - 107.0) if is_360 else -107.0
+            target_max_lon = (360 - 93.5) if is_360 else -93.5
+            master_lon_slice = slice(target_min_lon, target_max_lon)
+            
+            lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
+            master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
+            
+            ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
+            
+            lats_arr = ds_cropped.latitude.values
+            lons_arr = ds_cropped.longitude.values
+            
+            # Explicit axis transposition guaranteeing [latitude, longitude] ordering
+            da = ds_cropped[var_name].squeeze()
+            if da.dims != ('latitude', 'longitude'):
+                da = da.transpose('latitude', 'longitude')
+            data_arr = da.values
+            
+            for _, row in towns_df.iterrows():
+                key = f"{row['name']}, {row['state']}"
+                
+                c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
+                
+                # Correctly handle longitude negativity
+                c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
+                true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
+                
+                c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
+                c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
+                
+                # STRICT LIMITS: Removed the 0.015 pad to prevent bleeding into neighboring thunderstorms
+                lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
+                lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
+                
+                # Centroid fallback guarantees we snap to the exact 1km town center if it falls completely between pixels
+                if len(lat_idx) == 0:
+                    center_lat = (c_min_lat + c_max_lat) / 2.0
+                    lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
+                if len(lon_idx) == 0:
+                    center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
+                    lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
+                
+                if len(lat_idx) > 0 and len(lon_idx) > 0:
+                    min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
+                    min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
+                    
+                    slice_data = data_arr[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                    
+                    # MISSING DATA MASK: Strictly forces the engine to ignore NOAA's -99/-3/9999 no-data flags
+                    valid_data = slice_data[(slice_data >= 0) & (slice_data < 99990)]
+                    val = np.nanmax(valid_data) if valid_data.size > 0 else np.nan
+                else:
+                    val = np.nan
+                
+                if pd.notna(val) and val >= threshold:
+                    town_tallies[key]["score"] += 1
+                    
+                    if product == "RadarOnly_QPE_01H_00.00":
+                        v_in = float(val / 25.4)
+                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
+                    elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
+                        v_cfs = int(round(val * 91.464))
+                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
+                    elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
+                        v_cfs = int(round(val * 91.464))
+                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
+                        
+            ds.close()
+            if os.path.exists(local_grib): os.remove(local_grib)
+            logs.append(f"✅ Successfully scanned: {product}")
+            feed_health[product] = "🟢 Active & Loaded"
+        except Exception as e:
+            logs.append(f"❌ Crash on {product}: {str(e)}")
+            feed_health[product] = "🟡 Parse Error"
+            if os.path.exists(local_grib): os.remove(local_grib)
+
+    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 2 OUT OF 3 METRICS
+    for town_key, data in town_tallies.items():
+        if data["score"] >= 2:
+            results[town_key] = {
+                "Consensus Score": f"{data['score']} of 3 Metrics Broken",
+                "Trigger Details": data["details"]
+            }
+    return results, logs, feed_health
+
+# --- RENDERING THE MAP LAYERS ---
+def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+    layers = []
+    
+    # IEM NEXRAD Base Reflectivity WMS Overlay
+    radar_layer = pdk.Layer(
+        "BitmapLayer",
+        image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
+        bounds=[-110.0, 40.0, -90.0, 52.0],
+        opacity=radar_opacity_val, 
+        visible=show_radar
+    )
+    layers.append(radar_layer)
+
+    # 1. CWA Perimeters (Light Blue border with a responsive ghost fill for easy hover interaction)
+    outline_layer = pdk.Layer(
+        "GeoJsonLayer", cwa_layer, 
+        stroked=True,
+        filled=True, # Set to True to make the entire interior area hoverable
+        get_line_color=[135, 206, 250, 255], 
+        get_fill_color=[0, 0, 0, 1], # Transparent fill that still registers mouse pointers
+        get_line_width=3000, 
+        line_width_min_pixels=3, 
+        pickable=True
+    )
+    layers.append(outline_layer)
+    
+    # 2. WFO Centroid Text Labels
+    if wfo_labels:
+        wfo_text_layer = pdk.Layer(
+            "TextLayer",
+            data=wfo_labels,
+            get_position="coordinates",
+            get_text="wfo",
+            get_size=20,
+            get_color=[25, 25, 112, 255],
+            get_alignment_baseline="'center'",
+            font_weight="bold",
+            font_family="Helvetica, Arial, sans-serif"
+        )
+        layers.append(wfo_text_layer)
+
+    nws_warnings_layer = pdk.Layer(
+        "GeoJsonLayer", warnings_data,
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        stroke_width=3, line_width_min_pixels=2, pickable=True, visible=show_warnings
+    )
+    layers.append(nws_warnings_layer)
+
+    urban_polygon_layer = pdk.Layer(
+        "GeoJsonLayer", city_shapes,
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        pickable=True, extruded=False,
+        update_triggers={"get_fill_color": ["properties.fill_color"]}
+    )
+    layers.append(urban_polygon_layer)
+    
+    lsr_layer = pdk.Layer(
+        "GeoJsonLayer", lsr_data,
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        get_point_radius=3500, point_radius_min_pixels=6, pickable=True, visible=show_lsrs
+    )
+    layers.append(lsr_layer)
+    
+    return pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(latitude=45.5, longitude=-100.0, zoom=5.5, pitch=0),
+        map_style="light", 
+        tooltip={
+            "html": "<b style='color: #4AA4DE;'>{name}</b><br/>{hover_info}", 
+            "style": {"backgroundColor": "#222222", "color": "white", "maxWidth": "300px"}
+        }
+    )
+
+# --- EXECUTE CORE SCANS ---
+with st.spinner("Analyzing current regional CWA footprints..."):
+    active_alert_results, pipeline_logs, feed_health = scan_data(count)
+    live_warnings = get_nws_warnings()
+    live_lsrs = get_lsrs()
+
+# --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
+if 'alert_history' not in st.session_state:
+    st.session_state['alert_history'] = {}
+
+current_utc_time = datetime.now(timezone.utc)
+alert_results = {}
+
+# 1. Update memory history with newly triggered active alerts
+for town_key, data in active_alert_results.items():
+    st.session_state['alert_history'][town_key] = {
+        "time": current_utc_time,
+        "data": data
+    }
+    alert_results[town_key] = data
+
+# 2. Check history for towns resting in the cooldown window
+keys_to_remove = []
+# Ensure stable iteration over dictionary items
+for town_key, hist in list(st.session_state['alert_history'].items()):
+    if town_key not in active_alert_results:
+        time_since_trigger = current_utc_time - hist["time"]
+        if time_since_trigger <= timedelta(minutes=30):
+            # Town is in the 30-minute cooldown window
+            cooldown_data = hist["data"].copy()
+            cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
+            alert_results[town_key] = cooldown_data
+        else:
+            # Cooldown completely expired
+            keys_to_remove.append(town_key)
+
+# 3. Clean up expired alerts from background memory
+for k in keys_to_remove:
+    del st.session_state['alert_history'][k]
+
+st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
+st.session_state['feed_health'] = feed_health
+
+# Map the active alerts to the GeoJSON polygon layer 
+upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
+
+# Fetch baseline map polygons dynamically out of Cache memory to prevent lagging
+cwa_geojson, wfo_labels = get_processed_cwa_layer_final()
+urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
+
+for feature in urban_shapes_geojson["features"]:
+    feat_name = str(feature["properties"].get("name", "")).strip().upper()
+    
+    # EXACT name match to prevent substring overlap bugs (e.g. "Ray, ND" triggering "Raymond, ND")
+    if feat_name in upper_alert_results:
+        feature["properties"]["fill_color"] = [255, 0, 0, 200]  
+        feature["properties"]["line_color"] = [150, 0, 0, 255]
+        
+        # Dynamically change the hover tooltip based on whether it is an active threat or just draining
+        if "Cooldown" in upper_alert_results[feat_name].get("Consensus Score", ""):
+            feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 30-Min Drainage Cooldown Active"
+        else:
+            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
+    else:
+        # Re-apply base state in case the map re-renders after an alert expires
+        feature["properties"]["fill_color"] = [100, 100, 100, 160]     
+        feature["properties"]["line_color"] = [70, 70, 70, 200]     
+        feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
+
+st.subheader("Urban and Small Towns Flash Flood Alert Map")
+
+# --- NEW: DATA FEED HEALTH DASHBOARD ---
+st.markdown("##### 🌱 Live Data Feed Health")
+# We now display exactly 3 columns since we dropped Instantaneous Rain Rates
+health_cols = st.columns(3)
+friendly_names = {
+    "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
+    "FLASH_HP_MAXUNITSTREAMFLOW_00.00": "FLASH Hydrophobic Unit Streamflow"
+}
+for i, (prod, name) in enumerate(friendly_names.items()):
+    status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
+    health_cols[i].info(f"**{name}**\n\n{status}")
+
+st.pydeck_chart(render_map(
+    cwa_geojson, wfo_labels, urban_shapes_geojson, 
+    toggle_radar, radar_opacity,
+    live_warnings, toggle_warnings, 
+    live_lsrs, toggle_lsrs
+))
+
+with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
+    if 'pipeline_diagnostic_logs' in st.session_state:
+        for log in st.session_state['pipeline_diagnostic_logs']:
+            st.write(log)
+    else:
+        st.write("Initializing connections to NOAA data feeds...")
+
+if alert_results:
+    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
+    st.json(alert_results)
+else:
+    st.success("✅ No urban hydro hazards detected - at ease soldier.")
+
+if st.button("Refresh & Scan"):
+    st.rerun()
