@@ -314,7 +314,10 @@ def get_lsrs():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                event_type = str(feature["properties"].get("type", "")).upper()
+                
+                # FIX: Extract 'typetext' instead of 'type'
+                event_type = str(feature["properties"].get("typetext", "")).upper()
+                
                 if event_type == "FLASH FLOOD":
                     remark = feature["properties"].get("remark", "No additional details provided.")
                     city = feature["properties"].get("city", "Unknown")
