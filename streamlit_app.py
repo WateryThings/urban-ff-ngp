@@ -416,7 +416,8 @@ def scan_data(cycle_count):
             
             # --- INCREASED STALENESS TOLERANCE TO 150 MINUTES ---
             if age_minutes > 150:
-                logs.append(f"⚠️ {product} is stale ({int(age_minutes)} mins old). Skipping.")
+                clean_name = product.replace("_00.00", "")
+                logs.append(f"⚠️ {clean_name} is stale ({int(age_minutes)} mins old) | File Time: {scan_time}")
                 feed_health[product] = f"🟡 Stale ({int(age_minutes)}m)"
                 continue
         except:
@@ -505,10 +506,12 @@ def scan_data(cycle_count):
                         
             ds.close()
             if os.path.exists(local_grib): os.remove(local_grib)
-            logs.append(f"✅ Successfully scanned: {product}")
+            clean_name = product.replace("_00.00", "")
+            logs.append(f"✅ Scanned: {clean_name} | Valid: {scan_time}")
             feed_health[product] = "🟢 Active & Loaded"
         except Exception as e:
-            logs.append(f"❌ Crash on {product}: {str(e)}")
+            clean_name = product.replace("_00.00", "")
+            logs.append(f"❌ Crash on {clean_name} | File Time: {scan_time} | Error: {str(e)}")
             feed_health[product] = "🟡 Parse Error"
             if os.path.exists(local_grib): os.remove(local_grib)
 
@@ -579,7 +582,7 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     )
     layers.append(urban_polygon_layer)
     
-    # 3. REVERTED TO RELIABLE GEOJSON LAYER FOR GREEN CIRCLES
+    # 3. RELIABLE GEOJSON LAYER FOR GREEN CIRCLES
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
