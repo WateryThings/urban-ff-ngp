@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND REESES CUPS. DO NOT LOOK THE DRAGON IN THE EYE!!!!!
+         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND DOING A FAST BREAK FOR REESES! DO NOT LOOK THE DRAGON IN THE EYE!!!!!
     </div>
 """)
 
@@ -96,7 +96,7 @@ with col2:
     #### Map Symbology:
     * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
     * **Solid Red Polygons:** At least 2 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Alert Timing:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active 30 minutes after product thresholds have dropped below the required criteria.
+    * **Amber Polygons:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active in a 30-minute cooldown phase after thresholds have dropped.
     * **Automated Refresh:** Updates every 5-minutes.
     """, unsafe_allow_html=True)
 
@@ -314,7 +314,7 @@ def get_lsrs():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                # FIX: Extract 'typetext' instead of 'type'
+                # EXTRACT 'typetext' INSTEAD OF 'type'
                 event_type = str(feature["properties"].get("typetext", "")).upper()
                 
                 if event_type == "FLASH FLOOD":
@@ -625,6 +625,11 @@ for town_key, hist in list(st.session_state['alert_history'].items()):
             # Town is in the 30-minute cooldown window
             cooldown_data = hist["data"].copy()
             cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
+            
+            # CALCULATE MINUTES REMAINING
+            mins_left = int(30 - (time_since_trigger.total_seconds() / 60))
+            cooldown_data["Minutes Remaining"] = mins_left
+            
             alert_results[town_key] = cooldown_data
         else:
             # Cooldown completely expired
@@ -647,17 +652,24 @@ urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
 for feature in urban_shapes_geojson["features"]:
     feat_name = str(feature["properties"].get("name", "")).strip().upper()
     
-    # EXACT name match to prevent substring overlap bugs (e.g. "Ray, ND" triggering "Raymond, ND")
+    # EXACT name match to prevent substring overlap bugs
     if feat_name in upper_alert_results:
-        feature["properties"]["fill_color"] = [255, 0, 0, 200]  
-        feature["properties"]["line_color"] = [150, 0, 0, 255]
-        
         alert_data = upper_alert_results[feat_name]
         
-        # Dynamically change the hover tooltip based on whether it is an active threat or just draining
+        # Check if the town is just draining during the 30-minute cooldown
         if "Cooldown" in alert_data.get("Consensus Score", ""):
-            feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 30-Min Drainage Cooldown Active"
+            # Pull the calculated minutes left (defaults to 30 if just starting)
+            mins_left = alert_data.get("Minutes Remaining", 30)
+            
+            # 🟠 STEP DOWN TO AMBER/ORANGE FOR RUNOFF LAG
+            feature["properties"]["fill_color"] = [255, 140, 0, 180]   
+            feature["properties"]["line_color"] = [200, 100, 0, 255]   
+            feature["properties"]["hover_info"] = f"⚠️ RUNOFF LAG: Drainage Cooldown Active<br/><b>Time Remaining:</b> ~{mins_left} min"
         else:
+            # 🔴 KEEP SOLID RED FOR ACTIVE THREATS
+            feature["properties"]["fill_color"] = [255, 0, 0, 200]     
+            feature["properties"]["line_color"] = [150, 0, 0, 255]     
+            
             # Extract the specific triggered metrics and format them as an HTML list
             triggers = alert_data.get("Trigger Details", [])
             trigger_html = "<br/>".join([f"• {t}" for t in triggers])
@@ -685,7 +697,7 @@ for i, (prod, name) in enumerate(friendly_names.items()):
     status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
     health_cols[i].info(f"**{name}**\n\n{status}")
 
-# ADDED use_container_width AND height TO MAXIMIZE MAP
+# MAXIMIZED MAP
 st.pydeck_chart(render_map(
     cwa_geojson, wfo_labels, urban_shapes_geojson, 
     toggle_radar, radar_opacity,
