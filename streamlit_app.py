@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-         CAUTION: FF SO HARD. NOT ENOUGH TIME. HELP. 
+         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND REESES CUPS. DO NOT LOOK THE DRAGON IN THE EYE!!!!!
     </div>
 """)
 
@@ -127,17 +127,17 @@ def get_urban_centers():
     df['state'] = df['state'].astype(str).str.strip()
     df = df.drop_duplicates(subset=['name', 'state']).copy()
     
-    # --- THE BOUNDING BOX FIX ---
+    # --- THE TIGHTENED BOUNDING BOX FIX ---
     center_lat = (df['min_lat'] + df['max_lat']) / 2.0
     center_lon = (df['min_lon'] + df['max_lon']) / 2.0
     
     oversized = (df['max_lat'] - df['min_lat']) > 0.04
     
-    # Relaxed the "crusher" to a ~2.5 mile radius to ensure we don't miss storms hitting the edges/suburbs of towns
-    df.loc[oversized, 'min_lat'] = center_lat[oversized] - 0.035
-    df.loc[oversized, 'max_lat'] = center_lat[oversized] + 0.035
-    df.loc[oversized, 'min_lon'] = center_lon[oversized] - 0.045
-    df.loc[oversized, 'max_lon'] = center_lon[oversized] + 0.045
+    # Tightened to a 1-mile radius from the city center
+    df.loc[oversized, 'min_lat'] = center_lat[oversized] - 0.0145
+    df.loc[oversized, 'max_lat'] = center_lat[oversized] + 0.0145
+    df.loc[oversized, 'min_lon'] = center_lon[oversized] - 0.020
+    df.loc[oversized, 'max_lon'] = center_lon[oversized] + 0.020
     
     return df
 
@@ -314,7 +314,6 @@ def get_lsrs():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                
                 # FIX: Extract 'typetext' instead of 'type'
                 event_type = str(feature["properties"].get("typetext", "")).upper()
                 
@@ -413,7 +412,7 @@ def scan_data(cycle_count):
             
             age_minutes = (now_utc - dt_obj).total_seconds() / 60.0
             
-            # --- FIX 1: INCREASED STALENESS TOLERANCE TO 150 MINUTES ---
+            # --- INCREASED STALENESS TOLERANCE TO 150 MINUTES ---
             if age_minutes > 150:
                 logs.append(f"⚠️ {product} is stale ({int(age_minutes)} mins old). Skipping.")
                 feed_health[product] = f"🟡 Stale ({int(age_minutes)}m)"
@@ -538,9 +537,9 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, 
         stroked=True,
-        filled=True, # Set to True to make the entire interior area hoverable
+        filled=True, 
         get_line_color=[135, 206, 250, 255], 
-        get_fill_color=[0, 0, 0, 1], # Transparent fill that still registers mouse pointers
+        get_fill_color=[0, 0, 0, 1], 
         get_line_width=3000, 
         line_width_min_pixels=3, 
         pickable=True
@@ -573,8 +572,7 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
-        
-        # --- FIX 2: DYNAMIC TIMESTAMP TRIGGER FORCES LAYER TO REPAINT ---
+        # DYNAMIC TIMESTAMP TRIGGER FORCES LAYER TO REPAINT
         update_triggers={"get_fill_color": [time.time()]}
     )
     layers.append(urban_polygon_layer)
@@ -592,7 +590,7 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
         map_style="light", 
         tooltip={
             "html": "<b style='color: #4AA4DE;'>{name}</b><br/>{hover_info}", 
-            "style": {"backgroundColor": "#222222", "color": "white", "maxWidth": "300px"}
+            "style": {"backgroundColor": "#222222", "color": "white", "maxWidth": "350px"}
         }
     )
 
@@ -654,11 +652,18 @@ for feature in urban_shapes_geojson["features"]:
         feature["properties"]["fill_color"] = [255, 0, 0, 200]  
         feature["properties"]["line_color"] = [150, 0, 0, 255]
         
+        alert_data = upper_alert_results[feat_name]
+        
         # Dynamically change the hover tooltip based on whether it is an active threat or just draining
-        if "Cooldown" in upper_alert_results[feat_name].get("Consensus Score", ""):
+        if "Cooldown" in alert_data.get("Consensus Score", ""):
             feature["properties"]["hover_info"] = "⚠️ RUNOFF LAG: 30-Min Drainage Cooldown Active"
         else:
-            feature["properties"]["hover_info"] = "🚨 CRITICAL: 2+ HAZARD THRESHOLDS EXCEEDED"
+            # Extract the specific triggered metrics and format them as an HTML list
+            triggers = alert_data.get("Trigger Details", [])
+            trigger_html = "<br/>".join([f"• {t}" for t in triggers])
+            
+            # Inject the formatted string into the hover tooltip
+            feature["properties"]["hover_info"] = f"🚨 CRITICAL THREAT<br/><b>Exceeded Metrics:</b><br/>{trigger_html}"
     else:
         # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
@@ -667,10 +672,10 @@ for feature in urban_shapes_geojson["features"]:
 
 st.subheader("Urban and Small Towns Flash Flood Alert Map")
 
-# --- NEW: DATA FEED HEALTH DASHBOARD ---
+# --- DATA FEED HEALTH DASHBOARD ---
 st.markdown("##### 🌱 Live Data Feed Health")
-# We now display exactly 3 columns since we dropped Instantaneous Rain Rates
 health_cols = st.columns(3)
+# FIXED LINE BREAK IN DICTIONARY KEYS
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
     "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
@@ -680,12 +685,13 @@ for i, (prod, name) in enumerate(friendly_names.items()):
     status = st.session_state.get('feed_health', {}).get(prod, "⏳ Pending")
     health_cols[i].info(f"**{name}**\n\n{status}")
 
+# ADDED use_container_width AND height TO MAXIMIZE MAP
 st.pydeck_chart(render_map(
     cwa_geojson, wfo_labels, urban_shapes_geojson, 
     toggle_radar, radar_opacity,
     live_warnings, toggle_warnings, 
     live_lsrs, toggle_lsrs
-))
+), use_container_width=True, height=750)
 
 with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
     if 'pipeline_diagnostic_logs' in st.session_state:
@@ -693,12 +699,6 @@ with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=
             st.write(log)
     else:
         st.write("Initializing connections to NOAA data feeds...")
-
-if alert_results:
-    st.error("🚨 THRESHOLDS EXCEEDED WITHIN OPERATIONAL REGIONS:")
-    st.json(alert_results)
-else:
-    st.success("✅ No urban hydro hazards detected - at ease soldier.")
 
 if st.button("Refresh & Scan"):
     st.rerun()
