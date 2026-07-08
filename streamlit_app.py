@@ -94,9 +94,9 @@ with col1:
 with col2:
     st.markdown("""
     #### Map Symbology:
-    * **Dark Gray Polygons:** Spatial boundary extent of all 1,146 monitored urban areas and small towns.
-    * **Solid Red Polygons:** At least 2 out of 3 MRMS products exceed the thresholds anywhere strictly within the city boundaries.
-    * **Amber Polygons:** Alerts update live. To account for urban runoff and drainage lag, alerts will remain active in a 30-minute cooldown phase after thresholds have dropped.
+    * **Dark Gray Polygons (Monitoring):** Default boundary extent of all 1,146 monitored urban areas.
+    * **Solid Red Polygons (Active Threat):** The city is **currently** exceeding at least 2 out of 3 hazard thresholds.
+    * **Solid Orange Polygons (Runoff Lag):** The city previously met the thresholds but has dropped below them. To account for urban drainage lag, it remains highlighted for a 30-minute cooldown.
     * **Automated Refresh:** Updates every 5-minutes.
     """, unsafe_allow_html=True)
 
