@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-         CAUTION: EVEN HAN SOLO DOESN'T THINK THIS THING WILL HEAR HIM OR HOLD TOGETHER. 
+         CAUTION: FF SO HARD. NOT ENOUGH TIME. HELP. 
     </div>
 """)
 
