@@ -304,12 +304,12 @@ def get_nws_warnings():
         return {"type": "FeatureCollection", "features": []}
 
 
-# --- LOCAL STORM REPORTS ENGINE (WAVE UPDATE) ---
+# --- LOCAL STORM REPORTS ENGINE (GREEN CIRCLE UPDATE) ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
-    formatted_lsrs = []
+    filtered_features = []
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
@@ -322,18 +322,15 @@ def get_lsrs():
                     city = feature["properties"].get("city", "Unknown")
                     county = feature["properties"].get("county", "Unknown")
                     
-                    # Extract coordinates directly
-                    coords = feature.get("geometry", {}).get("coordinates", [0, 0])
+                    feature["properties"]["name"] = "🟢 Flash Flood LSR"
+                    feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
+                    feature["properties"]["fill_color"] = [0, 200, 0, 220]  # Bright Green!
+                    feature["properties"]["line_color"] = [255, 255, 255, 255] # White border
+                    filtered_features.append(feature)
                     
-                    formatted_lsrs.append({
-                        "coordinates": coords,
-                        "name": "🌊 Flash Flood LSR",
-                        "hover_info": f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}",
-                        "icon": "🌊" # Natively render the wave emoji!
-                    })
-            return formatted_lsrs
+            return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
-        return []
+        return {"type": "FeatureCollection", "features": []}
 
 
 # --- CACHED FILE LIST LAYER ---
@@ -582,16 +579,11 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     )
     layers.append(urban_polygon_layer)
     
-    # 3. TEXT LAYER TO RENDER THE EMOJIS NATIVELY
+    # 3. REVERTED TO RELIABLE GEOJSON LAYER FOR GREEN CIRCLES
     lsr_layer = pdk.Layer(
-        "TextLayer",
-        data=lsr_data,
-        get_position="coordinates",
-        get_text="icon",
-        get_size=40,
-        get_alignment_baseline="'bottom'",
-        pickable=True, 
-        visible=show_lsrs
+        "GeoJsonLayer", lsr_data,
+        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
+        get_point_radius=3500, point_radius_min_pixels=6, pickable=True, visible=show_lsrs
     )
     layers.append(lsr_layer)
     
@@ -698,7 +690,6 @@ st.subheader("Urban and Small Towns Flash Flood Alert Map")
 # --- DATA FEED HEALTH DASHBOARD ---
 st.markdown("##### 🌱 Live Data Feed Health")
 health_cols = st.columns(3)
-# FIXED LINE BREAK IN DICTIONARY KEYS
 friendly_names = {
     "RadarOnly_QPE_01H_00.00": "MRMS 1-hr QPE",
     "FLASH_CREST_MAXUNITSTREAMFLOW_00.00": "FLASH CREST Unit Streamflow",
