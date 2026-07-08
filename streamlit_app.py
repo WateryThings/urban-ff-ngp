@@ -54,7 +54,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND DOING A FAST BREAK FOR REESES! DO NOT LOOK THE DRAGON IN THE EYE!!!!!
+         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND DOING A FAST BREAK FOR REESES! DO NOT LOOK THE DRAGON IN THE EYE!!!!! 
     </div>
 """)
 
@@ -304,31 +304,36 @@ def get_nws_warnings():
         return {"type": "FeatureCollection", "features": []}
 
 
-# --- LOCAL STORM REPORTS ENGINE ---
+# --- LOCAL STORM REPORTS ENGINE (WAVE UPDATE) ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
     req = urllib.request.Request(url, headers={'User-Agent': 'UrbanFF-Prototype'})
-    filtered_features = []
+    formatted_lsrs = []
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                # EXTRACT 'typetext' INSTEAD OF 'type'
+                
                 event_type = str(feature["properties"].get("typetext", "")).upper()
                 
                 if event_type == "FLASH FLOOD":
                     remark = feature["properties"].get("remark", "No additional details provided.")
                     city = feature["properties"].get("city", "Unknown")
                     county = feature["properties"].get("county", "Unknown")
-                    feature["properties"]["name"] = "💧 Flash Flood LSR"
-                    feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
-                    feature["properties"]["fill_color"] = [255, 140, 0, 220]
-                    feature["properties"]["line_color"] = [255, 255, 255, 255]
-                    filtered_features.append(feature)
-            return {"type": "FeatureCollection", "features": filtered_features}
+                    
+                    # Extract coordinates directly
+                    coords = feature.get("geometry", {}).get("coordinates", [0, 0])
+                    
+                    formatted_lsrs.append({
+                        "coordinates": coords,
+                        "name": "🌊 Flash Flood LSR",
+                        "hover_info": f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}",
+                        "icon": "🌊" # Natively render the wave emoji!
+                    })
+            return formatted_lsrs
     except Exception:
-        return {"type": "FeatureCollection", "features": []}
+        return []
 
 
 # --- CACHED FILE LIST LAYER ---
@@ -577,10 +582,16 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     )
     layers.append(urban_polygon_layer)
     
+    # 3. TEXT LAYER TO RENDER THE EMOJIS NATIVELY
     lsr_layer = pdk.Layer(
-        "GeoJsonLayer", lsr_data,
-        get_line_color="properties.line_color", get_fill_color="properties.fill_color",
-        get_point_radius=3500, point_radius_min_pixels=6, pickable=True, visible=show_lsrs
+        "TextLayer",
+        data=lsr_data,
+        get_position="coordinates",
+        get_text="icon",
+        get_size=40,
+        get_alignment_baseline="'bottom'",
+        pickable=True, 
+        visible=show_lsrs
     )
     layers.append(lsr_layer)
     
