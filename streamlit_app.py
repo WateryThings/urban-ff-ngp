@@ -382,7 +382,7 @@ def extract_file(s3_path, idx_suffix=""):
 
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)  # Added ttl=300 to properly enforce 5-minute data updates
 def scan_data(cycle_count):
     towns_df = get_urban_centers()
     results = {}
