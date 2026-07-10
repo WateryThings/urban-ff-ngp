@@ -11,6 +11,7 @@ import urllib.request
 import pydeck as pdk
 import time
 import copy
+import uuid
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timezone, timedelta
 
@@ -54,7 +55,7 @@ st.html("""
     </style>
     
     <div class="custom-caution-banner">
-         CAUTION: THIS WEBSITE HAS AS MUCH HOPE AS SUCCEEEDING AS A DUCK SWIMMING IN A SPILLED PEPSI ON CONCRETE. It has not slept in 491 solar cycles - do not poke the bear. 
+         CAUTION: THIS WEBSITE IS SUFFERING A NERVOUS BREAKTHROUGH AND PRONE TO ERRATICALLY HOPEFUL BEHAVIOR, INCLUDING JUMPING JACKS AND DOING A FAST BREAK FOR REESES! DO NOT LOOK THE DRAGON IN THE EYE!!!!! It has not slept in 489 solar cycles.
     </div>
 """)
 
@@ -122,18 +123,15 @@ def get_urban_centers():
     df['max_lat'] = pd.to_numeric(df['max_lat'], errors='coerce')
     df = df.dropna(subset=['min_lon', 'max_lon', 'min_lat', 'max_lat']).copy()
     
-    # Clean leading/trailing spaces and drop duplicates to prevent duplicate enclaves or ghost fallback rendering
     df['name'] = df['name'].astype(str).str.strip()
     df['state'] = df['state'].astype(str).str.strip()
     df = df.drop_duplicates(subset=['name', 'state']).copy()
     
-    # --- THE TIGHTENED BOUNDING BOX FIX ---
     center_lat = (df['min_lat'] + df['max_lat']) / 2.0
     center_lon = (df['min_lon'] + df['max_lon']) / 2.0
     
     oversized = (df['max_lat'] - df['min_lat']) > 0.04
     
-    # Tightened to a 1-mile radius from the city center
     df.loc[oversized, 'min_lat'] = center_lat[oversized] - 0.0145
     df.loc[oversized, 'max_lat'] = center_lat[oversized] + 0.0145
     df.loc[oversized, 'min_lon'] = center_lon[oversized] - 0.020
@@ -150,19 +148,16 @@ def load_json_layer(filepath):
 
 @st.cache_data
 def get_processed_cwa_layer_final():
-    """Loads and formats the CWA layer exactly once, calculating dynamic text labels."""
     cwa_geojson = load_json_layer("cwa_outlines.json")
     cwa_copy = copy.deepcopy(cwa_geojson)
     labels = []
     
     for feat in cwa_copy.get("features", []):
         props = feat.get("properties", {})
-        # Smart extraction: GeoPandas sometimes saves columns in lowercase
         wfo_id = str(props.get("WFO", props.get("wfo", props.get("cwa", "Unknown")))).upper()
         feat["properties"]["name"] = wfo_id
         feat["properties"]["hover_info"] = ""
         
-        # Calculate dynamic text label centroids
         geom_type = feat.get("geometry", {}).get("type", "")
         coords = feat.get("geometry", {}).get("coordinates", [])
         flat_coords = []
@@ -188,7 +183,6 @@ def get_processed_cwa_layer_final():
 
 @st.cache_data
 def get_hybrid_urban_shapes():
-    """Generates the baseline urban shapes map without relying on hashed arguments."""
     csv_df = get_urban_centers()
     existing_geojson = load_json_layer("urban_boundaries.json")
     
@@ -198,8 +192,6 @@ def get_hybrid_urban_shapes():
     cleaned_features = []
     seen_names = set()
     
-    # ON-THE-FLY RECONCILIATION & SANITIZATION:
-    # Map state suffixes and strip trailing spaces to enable flashing and eliminate duplicate shapes
     for feature in existing_features:
         feat_name = str(feature["properties"].get("name", "")).strip()
         if not feat_name:
@@ -214,7 +206,7 @@ def get_hybrid_urban_shapes():
 
         full_name_upper = full_name.upper()
         if full_name_upper in seen_names:
-            continue  # Vaporizes any duplicate geometric slices in the GeoJSON layer
+            continue  
         seen_names.add(full_name_upper)
         
         feature["properties"]["name"] = full_name
@@ -304,7 +296,7 @@ def get_nws_warnings():
         return {"type": "FeatureCollection", "features": []}
 
 
-# --- LOCAL STORM REPORTS ENGINE (GREEN CIRCLE UPDATE) ---
+# --- LOCAL STORM REPORTS ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
 def get_lsrs():
     url = "https://mesonet.agron.iastate.edu/geojson/lsr.geojson?states=ND,SD,MN,MT,WY&hours=24"
@@ -314,9 +306,7 @@ def get_lsrs():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             for feature in data.get("features", []):
-                
                 event_type = str(feature["properties"].get("typetext", "")).upper()
-                
                 if event_type == "FLASH FLOOD":
                     remark = feature["properties"].get("remark", "No additional details provided.")
                     city = feature["properties"].get("city", "Unknown")
@@ -324,10 +314,9 @@ def get_lsrs():
                     
                     feature["properties"]["name"] = "🟢 Flash Flood LSR"
                     feature["properties"]["hover_info"] = f"<b>Location:</b> {city} ({county} County)<br/><b>Report:</b> {remark}"
-                    feature["properties"]["fill_color"] = [0, 200, 0, 220]  # Bright Green!
-                    feature["properties"]["line_color"] = [255, 255, 255, 255] # White border
+                    feature["properties"]["fill_color"] = [0, 200, 0, 220]  
+                    feature["properties"]["line_color"] = [255, 255, 255, 255] 
                     filtered_features.append(feature)
-                    
             return {"type": "FeatureCollection", "features": filtered_features}
     except Exception:
         return {"type": "FeatureCollection", "features": []}
@@ -364,25 +353,28 @@ def get_latest_files(product_name, num_files=1):
 
 def extract_file(s3_path, idx_suffix=""):
     fs = s3fs.S3FileSystem(anon=True, use_listings_cache=False)
-    temporal_id = time.time_ns()
-    local_gz = f"temp_{idx_suffix}_{temporal_id}.grib2.gz"
-    local_grib = f"temp_{idx_suffix}_{temporal_id}.grib2"
+    # FIX 1: Isolated disk naming using UUIDs to avoid concurrent file collision bottlenecks
+    thread_id = uuid.uuid4().hex
+    local_gz = f"temp_{idx_suffix}_{thread_id}.grib2.gz"
+    local_grib = f"temp_{idx_suffix}_{thread_id}.grib2"
     try:
         fs.get(s3_path, local_gz)
         with gzip.open(local_gz, 'rb') as f_in:
             with open(local_grib, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
-        if os.path.exists(local_gz):
-            os.remove(local_gz)
         return local_grib
     except Exception:
-        if os.path.exists(local_gz): os.remove(local_gz)
         if os.path.exists(local_grib): os.remove(local_grib)
         return None
+    finally:
+        # Guarantee scratch compressed files clear space out immediately 
+        if os.path.exists(local_gz): 
+            try: os.remove(local_gz)
+            except: pass
 
 
 # --- CONSENSUS CROSS-DATASET EVALUATION ENGINE ---
-@st.cache_data(ttl=300, show_spinner=False)  # Added ttl=300 to properly enforce 5-minute data updates
+@st.cache_data(ttl=300, show_spinner=False)  
 def scan_data(cycle_count):
     towns_df = get_urban_centers()
     results = {}
@@ -394,11 +386,9 @@ def scan_data(cycle_count):
     }
     
     town_tallies = {f"{row['name']}, {row['state']}": {"score": 0, "details": []} for _, row in towns_df.iterrows()}
-    
     master_lat_box = [41.5, 50.0]
     now_utc = datetime.now(timezone.utc)
     
-    # --- SCAN CORE PRODUCTS BLOCK ---
     for product, threshold in PRODUCTS.items():
         latest_files = get_latest_files(product, num_files=1)
         if not latest_files: 
@@ -407,21 +397,20 @@ def scan_data(cycle_count):
             continue
             
         s3_path = latest_files[0]
+        scan_time = "Live Scan"
         try:
             t_str = s3_path.split('_')[-1].split('.')[0]
             dt_obj = datetime.strptime(t_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
             scan_time = dt_obj.strftime("%H:%M UTC")
-            
             age_minutes = (now_utc - dt_obj).total_seconds() / 60.0
             
-            # --- INCREASED STALENESS TOLERANCE TO 150 MINUTES ---
             if age_minutes > 150:
                 clean_name = product.replace("_00.00", "")
                 logs.append(f"⚠️ {clean_name} is stale ({int(age_minutes)} mins old) | File Time: {scan_time}")
                 feed_health[product] = f"🟡 Stale ({int(age_minutes)}m)"
                 continue
         except:
-            scan_time = "Live Scan"
+            pass
             
         local_grib = extract_file(s3_path, product)
         if not local_grib: 
@@ -430,82 +419,70 @@ def scan_data(cycle_count):
             continue
             
         try:
-            ds = xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''})
-            var_name = list(ds.data_vars)[0]
-            
-            # Universal Coordinate Detection: Safely handle 0-360 vs -180/180
-            is_360 = bool(np.max(ds.longitude.values) > 180)
-            target_min_lon = (360 - 107.0) if is_360 else -107.0
-            target_max_lon = (360 - 93.5) if is_360 else -93.5
-            master_lon_slice = slice(target_min_lon, target_max_lon)
-            
-            lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
-            master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
-            
-            ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
-            
-            lats_arr = ds_cropped.latitude.values
-            lons_arr = ds_cropped.longitude.values
-            
-            # Explicit axis transposition guaranteeing [latitude, longitude] ordering
-            da = ds_cropped[var_name].squeeze()
-            if da.dims != ('latitude', 'longitude'):
-                da = da.transpose('latitude', 'longitude')
-            data_arr = da.values
-            
-            for _, row in towns_df.iterrows():
-                key = f"{row['name']}, {row['state']}"
+            # FIX 2: Wrapped open_dataset inside a context manager block to automatically handle closure on engine crashes
+            with xr.open_dataset(local_grib, engine="cfgrib", backend_kwargs={'indexpath': ''}) as ds:
+                var_name = list(ds.data_vars)[0]
                 
-                c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
+                is_360 = bool(np.max(ds.longitude.values) > 180)
+                target_min_lon = (360 - 107.0) if is_360 else -107.0
+                target_max_lon = (360 - 93.5) if is_360 else -93.5
+                master_lon_slice = slice(target_min_lon, target_max_lon)
                 
-                # Correctly handle longitude negativity
-                c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
-                c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
-                true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
-                true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
+                lat_ascending = bool(ds.latitude[0] < ds.latitude[-1])
+                master_lat_slice = slice(min(master_lat_box), max(master_lat_box)) if lat_ascending else slice(max(master_lat_box), min(master_lat_box))
                 
-                c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
-                c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
+                ds_cropped = ds.sel(latitude=master_lat_slice, longitude=master_lon_slice).load()
+                lats_arr = ds_cropped.latitude.values
+                lons_arr = ds_cropped.longitude.values
                 
-                # STRICT LIMITS: Removed the 0.015 pad to prevent bleeding into neighboring thunderstorms
-                lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
-                lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
+                da = ds_cropped[var_name].squeeze()
+                if da.dims != ('latitude', 'longitude'):
+                    da = da.transpose('latitude', 'longitude')
+                data_arr = da.values
                 
-                # Centroid fallback guarantees we snap to the exact 1km town center if it falls completely between pixels
-                if len(lat_idx) == 0:
-                    center_lat = (c_min_lat + c_max_lat) / 2.0
-                    lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
-                if len(lon_idx) == 0:
-                    center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
-                    lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
-                
-                if len(lat_idx) > 0 and len(lon_idx) > 0:
-                    min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
-                    min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
+                for _, row in towns_df.iterrows():
+                    key = f"{row['name']}, {row['state']}"
+                    c_min_lat, c_max_lat = min(row['min_lat'], row['max_lat']), max(row['min_lat'], row['max_lat'])
                     
-                    slice_data = data_arr[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                    c_min_lon_raw = row['min_lon'] if row['min_lon'] < 0 else -row['min_lon']
+                    c_max_lon_raw = row['max_lon'] if row['max_lon'] < 0 else -row['max_lon']
+                    true_min_lon = min(c_min_lon_raw, c_max_lon_raw)
+                    true_max_lon = max(c_min_lon_raw, c_max_lon_raw)
                     
-                    # MISSING DATA MASK: Strictly forces the engine to ignore NOAA's -99/-3/9999 no-data flags
-                    valid_data = slice_data[(slice_data >= 0) & (slice_data < 99990)]
-                    val = np.nanmax(valid_data) if valid_data.size > 0 else np.nan
-                else:
-                    val = np.nan
-                
-                if pd.notna(val) and val >= threshold:
-                    town_tallies[key]["score"] += 1
+                    c_target_min_lon = (true_min_lon % 360) if is_360 else true_min_lon
+                    c_target_max_lon = (true_max_lon % 360) if is_360 else true_max_lon
                     
-                    if product == "RadarOnly_QPE_01H_00.00":
-                        v_in = float(val / 25.4)
-                        town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
-                    elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
-                        v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
-                    elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
-                        v_cfs = int(round(val * 91.464))
-                        town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
-                        
-            ds.close()
-            if os.path.exists(local_grib): os.remove(local_grib)
+                    lat_idx = np.where((lats_arr >= c_min_lat) & (lats_arr <= c_max_lat))[0]
+                    lon_idx = np.where((lons_arr >= c_target_min_lon) & (lons_arr <= c_target_max_lon))[0]
+                    
+                    if len(lat_idx) == 0:
+                        center_lat = (c_min_lat + c_max_lat) / 2.0
+                        lat_idx = [np.argmin(np.abs(lats_arr - center_lat))]
+                    if len(lon_idx) == 0:
+                        center_lon = (c_target_min_lon + c_target_max_lon) / 2.0
+                        lon_idx = [np.argmin(np.abs(lons_arr - center_lon))]
+                    
+                    if len(lat_idx) > 0 and len(lon_idx) > 0:
+                        min_lat_i, max_lat_i = np.min(lat_idx), np.max(lat_idx)
+                        min_lon_i, max_lon_i = np.min(lon_idx), np.max(lon_idx)
+                        slice_data = data_arr[min_lat_i:max_lat_i+1, min_lon_i:max_lon_i+1]
+                        valid_data = slice_data[(slice_data >= 0) & (slice_data < 99990)]
+                        val = np.nanmax(valid_data) if valid_data.size > 0 else np.nan
+                    else:
+                        val = np.nan
+                    
+                    if pd.notna(val) and val >= threshold:
+                        town_tallies[key]["score"] += 1
+                        if product == "RadarOnly_QPE_01H_00.00":
+                            v_in = float(val / 25.4)
+                            town_tallies[key]["details"].append(f"1-hr QPE: {v_in:.2f} in (Thresh: 1.00 in) @ {scan_time}")
+                        elif product == "FLASH_CREST_MAXUNITSTREAMFLOW_00.00":
+                            v_cfs = int(round(val * 91.464))
+                            town_tallies[key]["details"].append(f"CREST Unit Flow: {v_cfs} cfs/sq mi (Thresh: 200) @ {scan_time}")
+                        elif product == "FLASH_HP_MAXUNITSTREAMFLOW_00.00":
+                            v_cfs = int(round(val * 91.464))
+                            town_tallies[key]["details"].append(f"Hydrophobic Unit Flow: {v_cfs} cfs/sq mi (Thresh: 1000) @ {scan_time}")
+            
             clean_name = product.replace("_00.00", "")
             logs.append(f"✅ Scanned: {clean_name} | Valid: {scan_time}")
             feed_health[product] = "🟢 Active & Loaded"
@@ -513,22 +490,25 @@ def scan_data(cycle_count):
             clean_name = product.replace("_00.00", "")
             logs.append(f"❌ Crash on {clean_name} | File Time: {scan_time} | Error: {str(e)}")
             feed_health[product] = "🟡 Parse Error"
-            if os.path.exists(local_grib): os.remove(local_grib)
+        finally:
+            if os.path.exists(local_grib):
+                try: os.remove(local_grib)
+                except: pass
 
-    # LOCKED ALERTS ENGINE TO CRITICAL THRESHOLD SCORE: 2 OUT OF 3 METRICS
     for town_key, data in town_tallies.items():
         if data["score"] >= 2:
             results[town_key] = {
                 "Consensus Score": f"{data['score']} of 3 Metrics Broken",
                 "Trigger Details": data["details"]
             }
+            
+    # FIX 3: Extracted all global assignments out of the core pipeline logic to avoid mutating session states cross-threads
     return results, logs, feed_health
 
 # --- RENDERING THE MAP LAYERS ---
-def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs):
+def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val, warnings_data, show_warnings, lsr_data, show_lsrs, refresh_cycle):
     layers = []
     
-    # IEM NEXRAD Base Reflectivity WMS Overlay
     radar_layer = pdk.Layer(
         "BitmapLayer",
         image="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&request=GetMap&version=1.1.1&layers=nexrad-n0q&srs=EPSG:3857&bbox=-12245143.98,4865942.28,-10018754.17,6799982.72&width=2302&height=2000&format=image/png&transparent=true",
@@ -538,31 +518,23 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
     )
     layers.append(radar_layer)
 
-    # 1. CWA Perimeters (Light Blue border with a responsive ghost fill for easy hover interaction)
     outline_layer = pdk.Layer(
         "GeoJsonLayer", cwa_layer, 
-        stroked=True,
-        filled=True, 
+        stroked=True, filled=True, 
         get_line_color=[135, 206, 250, 255], 
         get_fill_color=[0, 0, 0, 1], 
-        get_line_width=3000, 
-        line_width_min_pixels=3, 
+        get_line_width=3000, line_width_min_pixels=3, 
         pickable=True
     )
     layers.append(outline_layer)
     
-    # 2. WFO Centroid Text Labels
     if wfo_labels:
         wfo_text_layer = pdk.Layer(
-            "TextLayer",
-            data=wfo_labels,
-            get_position="coordinates",
-            get_text="wfo",
-            get_size=20,
-            get_color=[25, 25, 112, 255],
+            "TextLayer", data=wfo_labels,
+            get_position="coordinates", get_text="wfo",
+            get_size=20, get_color=[25, 25, 112, 255],
             get_alignment_baseline="'center'",
-            font_weight="bold",
-            font_family="Helvetica, Arial, sans-serif"
+            font_weight="bold", font_family="Helvetica, Arial, sans-serif"
         )
         layers.append(wfo_text_layer)
 
@@ -577,12 +549,11 @@ def render_map(cwa_layer, wfo_labels, city_shapes, show_radar, radar_opacity_val
         "GeoJsonLayer", city_shapes,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
         pickable=True, extruded=False,
-        # DYNAMIC TIMESTAMP TRIGGER FORCES LAYER TO REPAINT
-        update_triggers={"get_fill_color": [time.time()]}
+        # FIX 4: Replaced raw millisecond execution tracking with the cyclical integer to optimize rendering workloads
+        update_triggers={"get_fill_color": [refresh_cycle]}
     )
     layers.append(urban_polygon_layer)
     
-    # 3. RELIABLE GEOJSON LAYER FOR GREEN CIRCLES
     lsr_layer = pdk.Layer(
         "GeoJsonLayer", lsr_data,
         get_line_color="properties.line_color", get_fill_color="properties.fill_color",
@@ -606,6 +577,10 @@ with st.spinner("Analyzing current regional CWA footprints..."):
     live_warnings = get_nws_warnings()
     live_lsrs = get_lsrs()
 
+# Safe state deployment handled globally at runtime
+st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
+st.session_state['feed_health'] = feed_health
+
 # --- 30-MINUTE IMPACT COOLDOWN LOGIC ---
 if 'alert_history' not in st.session_state:
     st.session_state['alert_history'] = {}
@@ -613,7 +588,6 @@ if 'alert_history' not in st.session_state:
 current_utc_time = datetime.now(timezone.utc)
 alert_results = {}
 
-# 1. Update memory history with newly triggered active alerts
 for town_key, data in active_alert_results.items():
     st.session_state['alert_history'][town_key] = {
         "time": current_utc_time,
@@ -621,69 +595,44 @@ for town_key, data in active_alert_results.items():
     }
     alert_results[town_key] = data
 
-# 2. Check history for towns resting in the cooldown window
 keys_to_remove = []
-# Ensure stable iteration over dictionary items
 for town_key, hist in list(st.session_state['alert_history'].items()):
     if town_key not in active_alert_results:
         time_since_trigger = current_utc_time - hist["time"]
         if time_since_trigger <= timedelta(minutes=30):
-            # Town is in the 30-minute cooldown window
             cooldown_data = hist["data"].copy()
             cooldown_data["Consensus Score"] = "In 30-Min Impact Cooldown (Runoff Lag)"
-            
-            # CALCULATE MINUTES REMAINING
             mins_left = int(30 - (time_since_trigger.total_seconds() / 60))
             cooldown_data["Minutes Remaining"] = mins_left
-            
             alert_results[town_key] = cooldown_data
         else:
-            # Cooldown completely expired
             keys_to_remove.append(town_key)
 
-# 3. Clean up expired alerts from background memory
 for k in keys_to_remove:
     del st.session_state['alert_history'][k]
 
-st.session_state['pipeline_diagnostic_logs'] = pipeline_logs
-st.session_state['feed_health'] = feed_health
-
-# Map the active alerts to the GeoJSON polygon layer 
 upper_alert_results = {k.strip().upper(): v for k, v in alert_results.items()}
 
-# Fetch baseline map polygons dynamically out of Cache memory to prevent lagging
 cwa_geojson, wfo_labels = get_processed_cwa_layer_final()
 urban_shapes_geojson = copy.deepcopy(get_hybrid_urban_shapes())
 
 for feature in urban_shapes_geojson["features"]:
     feat_name = str(feature["properties"].get("name", "")).strip().upper()
     
-    # EXACT name match to prevent substring overlap bugs
     if feat_name in upper_alert_results:
         alert_data = upper_alert_results[feat_name]
-        
-        # Check if the town is just draining during the 30-minute cooldown
         if "Cooldown" in alert_data.get("Consensus Score", ""):
-            # Pull the calculated minutes left (defaults to 30 if just starting)
             mins_left = alert_data.get("Minutes Remaining", 30)
-            
-            # 🟠 STEP DOWN TO AMBER/ORANGE FOR RUNOFF LAG
             feature["properties"]["fill_color"] = [255, 140, 0, 180]   
             feature["properties"]["line_color"] = [200, 100, 0, 255]   
             feature["properties"]["hover_info"] = f"⚠️ RUNOFF LAG: Drainage Cooldown Active<br/><b>Time Remaining:</b> ~{mins_left} min"
         else:
-            # 🔴 KEEP SOLID RED FOR ACTIVE THREATS
             feature["properties"]["fill_color"] = [255, 0, 0, 200]     
             feature["properties"]["line_color"] = [150, 0, 0, 255]     
-            
-            # Extract the specific triggered metrics and format them as an HTML list
             triggers = alert_data.get("Trigger Details", [])
             trigger_html = "<br/>".join([f"• {t}" for t in triggers])
-            
-            # Inject the formatted string into the hover tooltip
             feature["properties"]["hover_info"] = f"🚨 CRITICAL THREAT<br/><b>Exceeded Metrics:</b><br/>{trigger_html}"
     else:
-        # Re-apply base state in case the map re-renders after an alert expires
         feature["properties"]["fill_color"] = [100, 100, 100, 160]     
         feature["properties"]["line_color"] = [70, 70, 70, 200]     
         feature["properties"]["hover_info"] = "Monitoring 3-Product Hazard Consensus"
@@ -707,7 +656,7 @@ st.pydeck_chart(render_map(
     cwa_geojson, wfo_labels, urban_shapes_geojson, 
     toggle_radar, radar_opacity,
     live_warnings, toggle_warnings, 
-    live_lsrs, toggle_lsrs
+    live_lsrs, toggle_lsrs, count
 ), use_container_width=True, height=750)
 
 with st.sidebar.expander("🛠️ Live Data Pipeline Diagnostic Logs", expanded=True):
